@@ -1,0 +1,109 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Mapbox GL JS stylesheet — required for the map to render correctly */
+@import "mapbox-gl/dist/mapbox-gl.css";
+
+/* ── Base ──────────────────────────────────────────────────────────────────── */
+body {
+  background-color: #0f172a;
+  color: #f8fafc;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  overflow-x: hidden;
+}
+
+/* ── Animations ────────────────────────────────────────────────────────────── */
+.fade-in {
+  animation: fadeIn 0.8s ease-out forwards;
+  opacity: 0;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(20px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Horizontal Scroll Carousels ───────────────────────────────────────────── */
+.horizontal-scroll-container {
+  display: flex;
+  overflow-x: auto;
+  gap: 1rem;
+  padding-bottom: 1rem;
+  padding-top: 0.5rem;
+  scroll-snap-type: x mandatory;
+  -webkit-overflow-scrolling: touch;
+  cursor: grab;
+}
+
+.horizontal-scroll-container:active { cursor: grabbing; }
+.horizontal-scroll-container::-webkit-scrollbar { height: 8px; }
+.horizontal-scroll-container::-webkit-scrollbar-track {
+  background: #1e293b; border-radius: 8px; margin: 0 10px;
+}
+.horizontal-scroll-container::-webkit-scrollbar-thumb {
+  background: #475569; border-radius: 8px; border: 2px solid #1e293b;
+}
+.horizontal-scroll-container::-webkit-scrollbar-thumb:hover { background: #64748b; }
+
+.stat-card {
+  min-width: 85vw;
+  scroll-snap-align: start;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  user-select: none;
+}
+
+.logistics-card {
+  min-width: 80vw;
+  scroll-snap-align: start;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  user-select: none;
+}
+
+@media (min-width: 768px) {
+  .stat-card { min-width: 380px; }
+  .logistics-card { min-width: 280px; }
+}
+
+/* ── Hover Cards ────────────────────────────────────────────────────────────── */
+.hover-card {
+  cursor: crosshair;
+  transition: all 0.2s ease;
+  border: 2px solid transparent;
+}
+.hover-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
+}
+
+/* ── Animated Plane ─────────────────────────────────────────────────────────── */
+.animated-plane {
+  font-size: 28px;
+  filter: drop-shadow(0 12px 8px rgba(0, 0, 0, 0.9));
+  transform: rotate(90deg) translate(-8px, -12px);
+  will-change: transform;
+  pointer-events: none;
+}
+
+/* ── Mapbox overrides ───────────────────────────────────────────────────────── */
+.mapboxgl-map { border-radius: 1rem; }
+.mapboxgl-popup-content {
+  background-color: #1e293b !important;
+  color: #f8fafc !important;
+  border: 1px solid #334155 !important;
+  border-radius: 8px !important;
+  font-family: inherit !important;
+  padding: 10px 14px !important;
+}
+.mapboxgl-popup-tip { border-top-color: #334155 !important; border-bottom-color: #334155 !important; }
+.mapboxgl-ctrl-group { background: #1e293b !important; border: 1px solid #334155 !important; }
+.mapboxgl-ctrl-group button { background-color: #1e293b !important; color: #f8fafc !important; }
+.mapboxgl-ctrl-group button:hover { background-color: #334155 !important; }
+.mapboxgl-ctrl-group button .mapboxgl-ctrl-icon { filter: invert(1); }
+.mapboxgl-ctrl-attrib { background: rgba(15, 23, 42, 0.8) !important; }
+.mapboxgl-ctrl-attrib a { color: #64748b !important; }

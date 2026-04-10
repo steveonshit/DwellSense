@@ -1,0 +1,805 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DwellSense | Real Estate Forensics</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+
+    <style>
+        body { background-color: #0f172a; color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; overflow-x: hidden; }
+        .fade-in { animation: fadeIn 0.8s ease-out forwards; opacity: 0; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+        
+        /* Map Styles */
+        .leaflet-container { z-index: 10; font-family: inherit; border-radius: 1rem; background-color: #0f172a; }
+        .leaflet-popup-content-wrapper { background-color: #1e293b; color: #f8fafc; border: 1px solid #334155; border-radius: 8px; }
+        .leaflet-popup-tip { background-color: #334155; }
+        
+        /* Custom Dark Tooltips for Hovering over Map Pins */
+        .leaflet-tooltip.custom-tooltip {
+            background-color: #1e293b !important; color: #f8fafc !important; border: 1px solid #334155 !important;
+            border-radius: 6px !important; padding: 4px 8px !important; font-family: inherit !important;
+            font-size: 11px !important; box-shadow: 0 4px 6px rgba(0,0,0,0.5) !important; white-space: nowrap !important;
+        }
+        .leaflet-tooltip-top.custom-tooltip::before { border-top-color: #334155 !important; } 
+        .leaflet-tooltip-bottom.custom-tooltip::before { border-bottom-color: #334155 !important; }
+        .leaflet-tooltip-left.custom-tooltip::before { border-left-color: #334155 !important; }
+        .leaflet-tooltip-right.custom-tooltip::before { border-right-color: #334155 !important; }
+
+        /* Larger Map Zoom Buttons */
+        .leaflet-touch .leaflet-control-zoom a, .leaflet-control-zoom a {
+            width: 36px !important; height: 36px !important; line-height: 36px !important;
+            font-size: 18px !important; font-weight: bold !important;
+            background-color: #1e293b !important; color: #f8fafc !important; border-color: #334155 !important;
+        }
+        .leaflet-control-zoom a:hover { background-color: #334155 !important; }
+
+        /* Custom Glowing Map Pins */
+        .custom-pin {
+            display: flex; align-items: center; justify-content: center; font-size: 14px;
+            background: rgba(30, 41, 59, 0.9); border: 1px solid; border-radius: 50%;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.5); backdrop-filter: blur(2px); cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .custom-pin:hover { transform: scale(1.15); box-shadow: 0 0 15px rgba(255,255,255,0.4); z-index: 5000 !important; }
+        .pin-target { border-color: #f43f5e; box-shadow: 0 0 25px rgba(244,63,94,1); font-size: 28px; background: transparent; border: none; }
+        
+        /* Data Swarm Pins (Micro Pins) */
+        .pin-mini { font-size: 12px; width: 22px !important; height: 22px !important; border-width: 1px; margin-left: -11px; margin-top: -11px; }
+        .pin-police { border-color: #3b82f6; color: #60a5fa; }
+        .pin-demo { border-color: #f97316; color: #fb923c; }
+        .pin-rat { border-color: #a855f7; color: #c084fc; }
+        .pin-truck { border-color: #eab308; color: #facc15; }
+        
+        /* Transit & Logistics Pins */
+        .pin-subway { border-color: #10b981; color: #34d399; font-size: 18px; background: rgba(16, 185, 129, 0.25); border-width: 2px;}
+        .pin-train { border-color: #c4b5fd; color: #ddd6fe; font-size: 18px; background: rgba(167, 139, 250, 0.25); border-width: 2px;}
+        .pin-bus { border-color: #bef264; color: #d9f99d; font-size: 18px; background: rgba(190, 242, 100, 0.25); border-width: 2px;}
+        .pin-airport { border-color: #fbbf24; color: #fcd34d; font-size: 22px; background: rgba(245, 158, 11, 0.3); border-width: 2px;}
+        .pin-mall { border-color: #06b6d4; color: #67e8f9; font-size: 22px; background: rgba(6, 182, 212, 0.3); border-width: 2px;}
+        
+        /* Grocery Pins */
+        .pin-targetstore { border-color: #ef4444; color: #fca5a5; font-size: 18px; background: rgba(239, 68, 68, 0.25); border-width: 2px;} 
+        .pin-walmart { border-color: #3b82f6; color: #93c5fd; font-size: 18px; background: rgba(59, 130, 246, 0.25); border-width: 2px;} 
+        .pin-traderjoes { border-color: #f97316; color: #fdba74; font-size: 18px; background: rgba(249, 115, 22, 0.25); border-width: 2px;}
+
+        /* Airplane CSS (Hardware Accelerated) */
+        .animated-plane { font-size: 32px; filter: drop-shadow(0 15px 10px rgba(0,0,0,0.9)); transform: rotate(90deg) translate(-10px, -15px); will-change: transform; pointer-events: none;}
+
+        /* Hover Cards for Map Routes */
+        .hover-card { cursor: crosshair; transition: all 0.2s ease; border: 2px solid transparent; }
+        .hover-card:hover { transform: translateY(-4px); box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5); }
+        path.route-anim { stroke-dasharray: 15 15; animation: dashMoveFast 0.8s linear infinite; }
+        @keyframes dashMoveFast { to { stroke-dashoffset: -30; } }
+
+        /* Custom Horizontal Scrollbars */
+        .horizontal-scroll-container {
+            display: flex; overflow-x: auto; gap: 1rem; padding-bottom: 1rem; padding-top: 0.5rem;
+            scroll-snap-type: x mandatory; -webkit-overflow-scrolling: touch; cursor: grab;
+        }
+        .horizontal-scroll-container:active { cursor: grabbing; }
+        .horizontal-scroll-container::-webkit-scrollbar { height: 8px; }
+        .horizontal-scroll-container::-webkit-scrollbar-track { background: #1e293b; border-radius: 8px; margin: 0 10px; }
+        .horizontal-scroll-container::-webkit-scrollbar-thumb { background: #475569; border-radius: 8px; border: 2px solid #1e293b; }
+        .horizontal-scroll-container::-webkit-scrollbar-thumb:hover { background: #64748b; }
+        
+        .stat-card { min-width: 85vw; scroll-snap-align: start; flex-shrink: 0; display: flex; flex-direction: column; user-select: none; }
+        .logistics-card { min-width: 80vw; scroll-snap-align: start; flex-shrink: 0; display: flex; align-items: center; justify-content: space-between; user-select: none; }
+        
+        @media (min-width: 768px) { 
+            .stat-card { min-width: 380px; } 
+            .logistics-card { min-width: 280px; } 
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col pt-[76px] relative">
+
+    <div id="side-ads-container" class="hidden fixed inset-0 pointer-events-none z-30 top-[76px]">
+        <div class="w-full h-full flex justify-between items-start max-w-[1640px] mx-auto pt-[40px] px-2 xl:px-4">
+            
+            <div class="w-[160px] h-[850px] bg-slate-800 border border-slate-700 rounded-2xl pointer-events-auto hidden min-[1550px]:flex flex-col shadow-2xl fade-in group hover:border-blue-500 transition-colors relative overflow-hidden">
+                <div class="absolute top-0 right-0 bg-slate-900 text-slate-500 text-[8px] uppercase tracking-widest px-3 py-1 rounded-bl-lg border-b border-l border-slate-700 z-10">Ad</div>
+                <div class="h-[220px] bg-blue-600 flex flex-col items-center justify-center p-4 relative overflow-hidden shrink-0">
+                    <div class="absolute inset-0 bg-black/20"></div>
+                    <div class="text-white font-black text-2xl text-center leading-tight relative z-10 uppercase tracking-tight">Moving<br>Soon?</div>
+                </div>
+                <div class="flex-1 bg-slate-900 p-4 flex flex-col items-center text-center">
+                    <div class="text-6xl mb-4 mt-4 transform group-hover:scale-110 transition-transform drop-shadow-lg">📦</div>
+                    <div class="text-slate-300 text-xs mb-4 font-bold leading-relaxed">Escape bad leases fast. Get 20% off heavy-duty moving supplies today.</div>
+                    
+                    <div class="bg-slate-800 rounded p-2 mb-4 w-full border border-slate-700">
+                        <div class="text-yellow-400 text-[10px] tracking-widest">★★★★★</div>
+                        <div class="text-[9px] text-slate-400 mt-1 italic leading-tight">"Saved me from a nightmare landlord!"</div>
+                    </div>
+
+                    <button class="mt-auto w-full bg-blue-600 text-white text-[11px] font-black py-3 rounded-lg group-hover:bg-blue-500 transition-colors uppercase tracking-widest shadow-lg">Shop Now</button>
+                </div>
+            </div>
+            
+            <div class="w-[160px] h-[850px] bg-slate-800 border border-slate-700 rounded-2xl pointer-events-auto hidden min-[1550px]:flex flex-col shadow-2xl fade-in group hover:border-emerald-500 transition-colors relative overflow-hidden" style="animation-delay: 0.2s;">
+                <div class="absolute top-0 right-0 bg-slate-900 text-slate-500 text-[8px] uppercase tracking-widest px-3 py-1 rounded-bl-lg border-b border-l border-slate-700 z-10">Ad</div>
+                <div class="h-[220px] bg-emerald-600 flex flex-col items-center justify-center p-4 relative overflow-hidden shrink-0">
+                    <div class="absolute inset-0 bg-black/20"></div>
+                    <div class="text-white font-black text-2xl text-center leading-tight relative z-10 uppercase tracking-tight">Bad<br>Landlord?</div>
+                </div>
+                <div class="flex-1 bg-slate-900 p-4 flex flex-col items-center text-center">
+                    <div class="text-6xl mb-4 mt-4 transform group-hover:scale-110 transition-transform drop-shadow-lg">⚖️</div>
+                    <div class="text-slate-300 text-xs mb-4 font-bold leading-relaxed">Legal protection for renters. Break your lease safely.</div>
+                    
+                    <div class="bg-slate-800 rounded p-2 mb-4 w-full border border-slate-700">
+                        <div class="text-emerald-400 text-xs font-black">98%</div>
+                        <div class="text-[9px] text-slate-400 uppercase tracking-widest font-bold mt-0.5">Success Rate</div>
+                    </div>
+
+                    <button class="mt-auto w-full bg-emerald-600 text-white text-[11px] font-black py-3 rounded-lg group-hover:bg-emerald-500 transition-colors uppercase tracking-widest shadow-lg">Free Consult</button>
+                </div>
+            </div>
+            
+        </div>
+    </div>
+
+    <nav class="w-full bg-slate-900/95 backdrop-blur-md border-b border-slate-800 py-3 px-4 md:px-8 flex items-center justify-between fixed top-0 z-50 shadow-lg h-[76px]">
+        <div class="hidden md:flex gap-6 text-sm font-bold text-slate-400 w-1/3">
+            <a href="#" class="hover:text-white transition-colors">Dashboard</a>
+            <a href="#" class="hover:text-white transition-colors">Saved Reports</a>
+            <a href="#" class="hover:text-white transition-colors">About Us</a>
+        </div>
+        <div class="absolute left-1/2 transform -translate-x-1/2 font-black text-4xl md:text-5xl text-white tracking-tighter cursor-pointer flex items-center gap-1 drop-shadow-md" onclick="location.reload()">
+            Dwell<span class="text-rose-500">Sense</span>
+        </div>
+        <div class="flex items-center justify-end gap-5 w-full md:w-1/3 text-sm font-bold text-slate-300">
+            <div class="hidden lg:block relative max-w-[200px] w-full">
+                <span class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-500">🔍</span>
+                <input type="text" placeholder="Quick search..." class="w-full bg-slate-950 border border-slate-700 rounded-lg pl-9 pr-4 py-1.5 text-xs text-white focus:outline-none focus:border-rose-500 transition-colors">
+            </div>
+            <div class="flex items-center gap-3 pl-2 cursor-pointer group">
+                <div class="hidden sm:block text-right">
+                    <div class="text-sm font-bold text-white group-hover:text-rose-400 transition-colors">Alex Morgan</div>
+                    <div class="text-[9px] text-slate-400 uppercase tracking-widest bg-slate-800 rounded px-1 inline-block border border-slate-700">Free Tier</div>
+                </div>
+                <div class="w-10 h-10 rounded-full bg-slate-700 border-2 border-slate-600 group-hover:border-rose-500 transition-colors overflow-hidden flex items-center justify-center text-slate-400">
+                    <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" clip-rule="evenodd"></path></svg>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <main class="flex-1 w-full max-w-[1300px] mx-auto flex flex-col items-center px-4 md:px-8 mt-4 relative z-10">
+
+        <div id="hero-section" class="text-center w-full max-w-4xl mb-10 mt-8 transition-all duration-500">
+            <h1 class="text-5xl md:text-7xl font-black mb-4 tracking-tight">Don't sign a <span class="text-rose-500 underline decoration-8 underline-offset-8">blind</span> lease.</h1>
+            <p class="text-slate-400 text-lg md:text-xl font-bold mb-8">Landlords sell the layout. We expose the reality.</p>
+            <div class="w-full bg-slate-800 p-8 rounded-3xl shadow-2xl border border-slate-700 text-left relative z-20">
+                <label class="block text-sm font-bold text-slate-400 mb-3 uppercase tracking-widest">📍 Target Property Address</label>
+                <div class="flex flex-col md:flex-row gap-4">
+                    <input type="text" id="address" value="Apt 4B, 1284 W Fulton St, Chicago, IL" class="flex-1 bg-slate-900 border-2 border-slate-600 rounded-xl px-5 py-4 text-white text-xl font-semibold focus:outline-none focus:border-rose-500 shadow-inner">
+                    <button id="scan-btn" onclick="runScan()" class="bg-rose-600 hover:bg-rose-500 text-white font-black text-xl py-4 px-10 rounded-xl transition-transform transform hover:scale-105 shadow-[0_0_20px_rgba(225,29,72,0.4)] flex justify-center items-center gap-2">
+                        <span>RUN FORENSICS</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <div id="loading-section" class="hidden w-full max-w-4xl bg-slate-900 border border-slate-700 rounded-3xl overflow-hidden shadow-2xl mt-4 relative z-20 fade-in">
+            <div class="bg-black/80 px-4 py-3 border-b border-slate-800 flex justify-between items-center absolute top-0 w-full z-30">
+                <div class="flex items-center gap-3">
+                    <div class="w-3 h-3 rounded-full bg-rose-500 animate-pulse"></div>
+                    <span class="text-slate-300 text-xs font-bold uppercase tracking-widest hidden sm:inline-block">Analyzing Data & Mapping...</span>
+                </div>
+                <div class="flex items-center gap-3">
+                    <span class="text-slate-400 text-[10px] font-bold uppercase tracking-wider border border-slate-600 px-2 py-0.5 rounded hidden sm:inline-block">Advertisement</span>
+                    
+                    <span id="timer-wrapper" class="text-white text-xs font-bold bg-slate-800 px-3 py-1.5 rounded border border-slate-700 inline-block">Report in <span id="ad-timer" class="text-rose-400 w-3 inline-block text-center">5</span>s</span>
+                    
+                    <button id="skip-ad-btn" onclick="forceSkipAd()" class="hidden text-white text-xs font-bold bg-slate-700 hover:bg-rose-600 px-3 py-1.5 rounded transition-colors cursor-pointer border border-slate-500 shadow-lg flex items-center gap-1">
+                        Skip Ad ⏭
+                    </button>
+                </div>
+            </div>
+            <div class="w-full h-[350px] bg-gradient-to-br from-indigo-900 to-slate-900 flex flex-col md:flex-row items-center justify-center p-8 pt-16 relative">
+                <div class="md:w-1/2 flex justify-center items-center z-10">
+                    <div class="w-32 h-32 bg-indigo-500/20 rounded-full border-4 border-indigo-500/30 flex items-center justify-center shadow-[0_0_30px_rgba(99,102,241,0.3)] text-5xl">🛡️</div>
+                </div>
+                <div class="md:w-1/2 text-center md:text-left z-10 mt-6 md:mt-0">
+                    <div class="text-indigo-400 font-black tracking-widest text-[10px] uppercase mb-1">Sponsored Partner</div>
+                    <h2 class="text-3xl font-black text-white mb-3">SafeLease Insurance</h2>
+                    <p class="text-slate-300 text-sm mb-5">Protect your belongings from terrible neighbors and sudden leaks. Plans start at just <strong class="text-white">$5/mo</strong>.</p>
+                    <button onclick="forceSkipAd()" class="bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-2 px-6 rounded-lg transition-colors shadow-lg shadow-indigo-900/50">Get a Free Quote ↗</button>
+                </div>
+            </div>
+            <div class="w-full h-1 bg-slate-800 absolute bottom-0 z-30">
+                <div id="ad-progress" class="h-full bg-rose-500 shadow-[0_0_10px_rgba(225,29,72,0.8)] w-0"></div>
+            </div>
+        </div>
+
+        <div id="results-section" class="hidden w-full space-y-5 pb-12 overflow-hidden relative z-20">
+            
+            <div class="bg-gradient-to-r from-rose-950 to-slate-900 border border-rose-500/50 p-4 md:px-6 md:py-4 rounded-2xl flex flex-col md:flex-row justify-between items-center shadow-xl fade-in mt-2">
+                <div>
+                    <h2 class="text-xl md:text-3xl font-black text-white flex items-center gap-3 uppercase tracking-tight">🚨 EXTREME RISK DETECTED</h2>
+                    <p class="text-rose-300 text-sm mt-1 font-bold">AI verified a dense swarm of severe nuisances. See map below.</p>
+                </div>
+                <div class="text-center mt-4 md:mt-0 bg-black/40 px-4 py-2 rounded-xl border border-rose-500/30 backdrop-blur-sm shrink-0 flex items-center gap-3">
+                    <div class="text-left hidden sm:block">
+                        <div class="text-[10px] text-rose-300 uppercase tracking-widest font-bold leading-tight">Danger<br>Score</div>
+                    </div>
+                    <div class="text-4xl md:text-5xl font-black text-rose-500 drop-shadow-[0_0_15px_rgba(225,29,72,0.5)]">91<span class="text-xl text-rose-800">/100</span></div>
+                </div>
+            </div>
+
+            <div class="fade-in w-full" style="animation-delay: 0.1s;">
+                <div class="flex justify-between items-center mb-1 px-2">
+                    <h3 class="text-white font-black uppercase tracking-widest text-sm md:text-base flex items-center gap-2">📍 Transit & Grocery Proximity</h3>
+                    <div class="flex items-center gap-2 text-rose-400 bg-rose-500/10 px-3 py-1.5 rounded-full border border-rose-500/20">
+                        <span class="animate-pulse">←</span><span class="text-[10px] font-black tracking-widest uppercase ml-1 mr-1">Drag / Swipe</span><span class="animate-pulse">→</span>
+                    </div>
+                </div>
+
+                <div class="horizontal-scroll-container">
+                    
+                    <div class="logistics-card bg-[#1e293b] border border-slate-700/50 p-2 md:p-2.5 rounded-2xl shadow-lg hover-card hover:bg-slate-700 group transition-colors" style="border-color:transparent;" onmouseenter="this.style.borderColor='#10b981'; showRoute('subway');" onmouseleave="this.style.borderColor='transparent'; hideRoute();">
+                        <div class="flex items-center gap-2 overflow-hidden flex-1 pr-1">
+                            <div class="w-10 h-10 md:w-11 md:h-11 bg-[#0f172a] rounded-xl border border-slate-700/60 flex items-center justify-center text-xl shrink-0 shadow-inner group-hover:border-[#10b981]/50 transition-colors">🚇</div>
+                            <div class="flex flex-col justify-center min-w-0">
+                                <div class="text-slate-400 text-[8px] md:text-[9px] font-black uppercase tracking-widest leading-none mb-1">Subway</div>
+                                <div class="text-white font-black text-[13px] xl:text-[14px] leading-tight mb-1 whitespace-normal">Morgan Station Subway</div>
+                                <div class="text-[#10b981] text-[8px] font-bold uppercase tracking-widest leading-none transition-colors truncate">Route Map ↗</div>
+                            </div>
+                        </div>
+                        <div class="text-right flex flex-col justify-center items-end pl-2 ml-1 border-l border-slate-700/50 shrink-0 h-full">
+                            <div class="text-white text-base lg:text-lg font-black leading-none tracking-tight mb-1">2,112</div>
+                            <div class="text-slate-400 text-[8px] md:text-[9px] font-bold uppercase tracking-widest leading-none">Feet</div>
+                        </div>
+                    </div>
+
+                    <div class="logistics-card bg-[#1e293b] border border-slate-700/50 p-2 md:p-2.5 rounded-2xl shadow-lg hover-card hover:bg-slate-700 group transition-colors" style="border-color:transparent;" onmouseenter="this.style.borderColor='#c4b5fd'; showRoute('train');" onmouseleave="this.style.borderColor='transparent'; hideRoute();">
+                        <div class="flex items-center gap-2 overflow-hidden flex-1 pr-1">
+                            <div class="w-10 h-10 md:w-11 md:h-11 bg-[#0f172a] rounded-xl border border-slate-700/60 flex items-center justify-center text-xl shrink-0 shadow-inner group-hover:border-[#c4b5fd]/50 transition-colors">🚆</div>
+                            <div class="flex flex-col justify-center min-w-0">
+                                <div class="text-slate-400 text-[8px] md:text-[9px] font-black uppercase tracking-widest leading-none mb-1 truncate">Train Line</div>
+                                <div class="text-white font-black text-[13px] xl:text-[14px] leading-tight mb-1 whitespace-normal">Ogilvie Transit Hub</div>
+                                <div class="text-[#c4b5fd] text-[8px] font-bold uppercase tracking-widest leading-none transition-colors truncate">Route Map ↗</div>
+                            </div>
+                        </div>
+                        <div class="text-right flex flex-col justify-center items-end pl-2 ml-1 border-l border-slate-700/50 shrink-0 h-full">
+                            <div class="text-white text-base lg:text-lg font-black leading-none tracking-tight mb-1">1.2</div>
+                            <div class="text-slate-400 text-[8px] md:text-[9px] font-bold uppercase tracking-widest leading-none">Miles</div>
+                        </div>
+                    </div>
+
+                    <div class="logistics-card bg-[#1e293b] border border-slate-700/50 p-2 md:p-2.5 rounded-2xl shadow-lg hover-card hover:bg-slate-700 group transition-colors" style="border-color:transparent;" onmouseenter="this.style.borderColor='#bef264'; showRoute('bus');" onmouseleave="this.style.borderColor='transparent'; hideRoute();">
+                        <div class="flex items-center gap-2 overflow-hidden flex-1 pr-1">
+                            <div class="w-10 h-10 md:w-11 md:h-11 bg-[#0f172a] rounded-xl border border-slate-700/60 flex items-center justify-center text-xl shrink-0 shadow-inner group-hover:border-[#bef264]/50 transition-colors">🚌</div>
+                            <div class="flex flex-col justify-center min-w-0">
+                                <div class="text-slate-400 text-[8px] md:text-[9px] font-black uppercase tracking-widest leading-none mb-1 truncate">City Bus</div>
+                                <div class="text-white font-black text-[13px] xl:text-[14px] leading-tight mb-1 whitespace-normal">Halsted Route 8</div>
+                                <div class="text-[#bef264] text-[8px] font-bold uppercase tracking-widest leading-none transition-colors truncate">Route Map ↗</div>
+                            </div>
+                        </div>
+                        <div class="text-right flex flex-col justify-center items-end pl-2 ml-1 border-l border-slate-700/50 shrink-0 h-full">
+                            <div class="text-white text-base lg:text-lg font-black leading-none tracking-tight mb-1">450</div>
+                            <div class="text-slate-400 text-[8px] md:text-[9px] font-bold uppercase tracking-widest leading-none">Feet</div>
+                        </div>
+                    </div>
+
+                    <div class="logistics-card bg-[#1e293b] border border-slate-700/50 p-2 md:p-2.5 rounded-2xl shadow-lg hover-card hover:bg-slate-700 group transition-colors" style="border-color:transparent;" onmouseenter="this.style.borderColor='#ef4444'; showRoute('targetstore');" onmouseleave="this.style.borderColor='transparent'; hideRoute();">
+                        <div class="flex items-center gap-2 overflow-hidden flex-1 pr-1">
+                            <div class="w-10 h-10 md:w-11 md:h-11 bg-[#0f172a] rounded-xl border border-slate-700/60 flex items-center justify-center text-xl shrink-0 shadow-inner group-hover:border-[#ef4444]/50 transition-colors">🎯</div>
+                            <div class="flex flex-col justify-center min-w-0">
+                                <div class="text-slate-400 text-[8px] md:text-[9px] font-black uppercase tracking-widest leading-none mb-1 truncate">Grocery</div>
+                                <div class="text-white font-black text-[13px] xl:text-[14px] leading-tight mb-1 whitespace-normal">Target West Loop</div>
+                                <div class="text-[#ef4444] text-[8px] font-bold uppercase tracking-widest leading-none transition-colors truncate">Route Map ↗</div>
+                            </div>
+                        </div>
+                        <div class="text-right flex flex-col justify-center items-end pl-2 ml-1 border-l border-slate-700/50 shrink-0 h-full">
+                            <div class="text-white text-base lg:text-lg font-black leading-none tracking-tight mb-1">0.6</div>
+                            <div class="text-slate-400 text-[8px] md:text-[9px] font-bold uppercase tracking-widest leading-none">Miles</div>
+                        </div>
+                    </div>
+
+                    <div class="logistics-card bg-[#1e293b] border border-slate-700/50 p-2 md:p-2.5 rounded-2xl shadow-lg hover-card hover:bg-slate-700 group transition-colors" style="border-color:transparent;" onmouseenter="this.style.borderColor='#f97316'; showRoute('traderjoes');" onmouseleave="this.style.borderColor='transparent'; hideRoute();">
+                        <div class="flex items-center gap-2 overflow-hidden flex-1 pr-1">
+                            <div class="w-10 h-10 md:w-11 md:h-11 bg-[#0f172a] rounded-xl border border-slate-700/60 flex items-center justify-center text-xl shrink-0 shadow-inner group-hover:border-[#f97316]/50 transition-colors">🥑</div>
+                            <div class="flex flex-col justify-center min-w-0">
+                                <div class="text-slate-400 text-[8px] md:text-[9px] font-black uppercase tracking-widest leading-none mb-1 truncate">Grocery</div>
+                                <div class="text-white font-black text-[13px] xl:text-[14px] leading-tight mb-1 whitespace-normal">Trader Joe's</div>
+                                <div class="text-[#f97316] text-[8px] font-bold uppercase tracking-widest leading-none transition-colors truncate">Route Map ↗</div>
+                            </div>
+                        </div>
+                        <div class="text-right flex flex-col justify-center items-end pl-2 ml-1 border-l border-slate-700/50 shrink-0 h-full">
+                            <div class="text-white text-base lg:text-lg font-black leading-none tracking-tight mb-1">0.8</div>
+                            <div class="text-slate-400 text-[8px] md:text-[9px] font-bold uppercase tracking-widest leading-none">Miles</div>
+                        </div>
+                    </div>
+
+                    <div class="logistics-card bg-[#1e293b] border border-slate-700/50 p-2 md:p-2.5 rounded-2xl shadow-lg hover-card hover:bg-slate-700 group transition-colors" style="border-color:transparent;" onmouseenter="this.style.borderColor='#3b82f6'; showRoute('walmart');" onmouseleave="this.style.borderColor='transparent'; hideRoute();">
+                        <div class="flex items-center gap-2 overflow-hidden flex-1 pr-1">
+                            <div class="w-10 h-10 md:w-11 md:h-11 bg-[#0f172a] rounded-xl border border-slate-700/60 flex items-center justify-center text-xl shrink-0 shadow-inner group-hover:border-[#3b82f6]/50 transition-colors">🛒</div>
+                            <div class="flex flex-col justify-center min-w-0">
+                                <div class="text-slate-400 text-[8px] md:text-[9px] font-black uppercase tracking-widest leading-none mb-1 truncate">Grocery</div>
+                                <div class="text-white font-black text-[13px] xl:text-[14px] leading-tight mb-1 whitespace-normal">Walmart Supercenter</div>
+                                <div class="text-[#3b82f6] text-[8px] font-bold uppercase tracking-widest leading-none transition-colors truncate">Route Map ↗</div>
+                            </div>
+                        </div>
+                        <div class="text-right flex flex-col justify-center items-end pl-2 ml-1 border-l border-slate-700/50 shrink-0 h-full">
+                            <div class="text-white text-base lg:text-lg font-black leading-none tracking-tight mb-1">1.1</div>
+                            <div class="text-slate-400 text-[8px] md:text-[9px] font-bold uppercase tracking-widest leading-none">Miles</div>
+                        </div>
+                    </div>
+
+                    <div class="logistics-card bg-[#1e293b] border border-slate-700/50 p-2 md:p-2.5 rounded-2xl shadow-lg hover-card hover:bg-slate-700 group transition-colors" style="border-color:transparent;" onmouseenter="this.style.borderColor='#fbbf24'; showRoute('airport');" onmouseleave="this.style.borderColor='transparent'; hideRoute();">
+                        <div class="flex items-center gap-2 overflow-hidden flex-1 pr-1">
+                            <div class="w-10 h-10 md:w-11 md:h-11 bg-[#0f172a] rounded-xl border border-slate-700/60 flex items-center justify-center text-xl shrink-0 shadow-inner group-hover:border-[#fbbf24]/50 transition-colors">✈️</div>
+                            <div class="flex flex-col justify-center min-w-0">
+                                <div class="text-slate-400 text-[8px] md:text-[9px] font-black uppercase tracking-widest leading-none mb-1 truncate">Airport</div>
+                                <div class="text-white font-black text-[13px] xl:text-[14px] leading-tight mb-1 whitespace-normal">O'Hare Int'l (ORD)</div>
+                                <div class="text-[#fbbf24] text-[8px] font-bold uppercase tracking-widest leading-none transition-colors truncate">Route Map ↗</div>
+                            </div>
+                        </div>
+                        <div class="text-right flex flex-col justify-center items-end pl-2 ml-1 border-l border-slate-700/50 shrink-0 h-full">
+                            <div class="text-white text-base lg:text-lg font-black leading-none tracking-tight mb-1">15.2</div>
+                            <div class="text-slate-400 text-[8px] md:text-[9px] font-bold uppercase tracking-widest leading-none">Miles</div>
+                        </div>
+                    </div>
+
+                    <div class="logistics-card bg-[#1e293b] border border-slate-700/50 p-2 md:p-2.5 rounded-2xl shadow-lg hover-card hover:bg-slate-700 group transition-colors pr-6" style="border-color:transparent;" onmouseenter="this.style.borderColor='#06b6d4'; showRoute('mall');" onmouseleave="this.style.borderColor='transparent'; hideRoute();">
+                        <div class="flex items-center gap-2 overflow-hidden flex-1 pr-1">
+                            <div class="w-10 h-10 md:w-11 md:h-11 bg-[#0f172a] rounded-xl border border-slate-700/60 flex items-center justify-center text-xl shrink-0 shadow-inner group-hover:border-[#06b6d4]/50 transition-colors">🛍️</div>
+                            <div class="flex flex-col justify-center min-w-0">
+                                <div class="text-slate-400 text-[8px] md:text-[9px] font-black uppercase tracking-widest leading-none mb-1 truncate">Retail Center</div>
+                                <div class="text-white font-black text-[13px] xl:text-[14px] leading-tight mb-1 whitespace-normal">Block 37 Retail Mall</div>
+                                <div class="text-[#06b6d4] text-[8px] font-bold uppercase tracking-widest leading-none transition-colors truncate">Route Map ↗</div>
+                            </div>
+                        </div>
+                        <div class="text-right flex flex-col justify-center items-end pl-2 ml-1 border-l border-slate-700/50 shrink-0 h-full">
+                            <div class="text-white text-base lg:text-lg font-black leading-none tracking-tight mb-1">1.8</div>
+                            <div class="text-slate-400 text-[8px] md:text-[9px] font-bold uppercase tracking-widest leading-none">Miles</div>
+                        </div>
+                    </div>
+
+                </div>
+            </div>
+
+            <div class="w-full bg-slate-800 rounded-3xl border border-slate-700 shadow-2xl p-4 fade-in" style="animation-delay: 0.2s;">
+                <div class="flex justify-between items-center mb-4 px-2">
+                    <h3 class="text-white font-black uppercase tracking-widest text-sm flex items-center gap-2">🗺️ Live Threat Density Map <span class="text-rose-500 animate-pulse">● Live Swarm</span></h3>
+                    <span class="text-slate-400 text-[10px] font-bold bg-slate-900 px-3 py-1 rounded-full border border-slate-700 italic hidden md:block">Scroll to zoom. Hover over map pins for details.</span>
+                </div>
+                
+                <div id="map-container" class="w-full h-[450px] md:h-[600px] bg-slate-900 rounded-2xl relative z-0 border border-slate-800 overflow-hidden"></div>
+                
+                <div class="flex flex-wrap justify-center sm:justify-start gap-3 mt-4 px-2 text-[10px] md:text-[11px] font-bold text-slate-300">
+                    <span class="flex items-center gap-1"><div class="text-rose-500 text-lg">📍</div> Target Property</span>
+                    <span class="flex items-center gap-1"><div class="w-3 h-3 rounded-full bg-red-500/40 border border-red-500"></div> Crime Zone</span>
+                    <span class="flex items-center gap-1"><div class="w-3 h-3 rounded-full bg-blue-500/40 border border-blue-500"></div> Police Zone</span>
+                    <span class="flex items-center gap-1 text-emerald-400 ml-2">🚇 Transit</span>
+                    <span class="flex items-center gap-1 text-rose-400">🎯 Groceries</span>
+                    <span class="flex items-center gap-1 text-amber-400">✈️ Airport</span>
+                    <span class="flex items-center gap-1 text-cyan-400">🛍️ Mall</span>
+                    <span class="flex items-center gap-1 ml-2"><div class="w-6 h-1 bg-cyan-500 border-y border-dashed border-cyan-200"></div> Flight Route</span>
+                </div>
+            </div>
+
+            <div class="fade-in w-full" style="animation-delay: 0.3s;">
+                <div class="flex justify-between items-center mb-2 px-2">
+                    <h3 class="text-white font-black uppercase tracking-widest text-sm md:text-base flex items-center gap-2">📑 9-Point Threat Analysis</h3>
+                    <div class="flex items-center gap-2 text-rose-400 bg-rose-500/10 px-3 py-1.5 rounded-full border border-rose-500/20">
+                        <span class="animate-pulse">←</span><span class="text-[10px] font-black tracking-widest uppercase ml-1 mr-1">Drag / Swipe</span><span class="animate-pulse">→</span>
+                    </div>
+                </div>
+
+                <div id="stats-slider" class="horizontal-scroll-container">
+                    <div class="stat-card bg-slate-800 p-6 md:p-8 rounded-3xl border-l-[10px] border-rose-500 shadow-xl hover:bg-slate-700 transition-colors">
+                        <h3 class="text-xl md:text-2xl font-black text-white mb-2 uppercase">🏃‍♂️ HIGH CHURN</h3>
+                        <p class="text-rose-400 font-bold mb-4 text-sm md:text-base">Tenants constantly break lease.</p>
+                        <ul class="list-disc pl-5 text-slate-300 text-xs md:text-sm space-y-2">
+                            <li><strong class="text-white">4 different tenants</strong> in 3 years.</li>
+                            <li>Neighborhood avg is 2.5 years.</li>
+                            <li>Mathematical proof of unlivable unit.</li>
+                        </ul>
+                    </div>
+
+                    <div class="stat-card bg-slate-800 p-6 md:p-8 rounded-3xl border-l-[10px] border-blue-500 shadow-xl hover:bg-slate-700 transition-colors">
+                        <h3 class="text-xl md:text-2xl font-black text-white mb-2 uppercase">🚓 POLICE CALLS</h3>
+                        <p class="text-blue-400 font-bold mb-4 text-sm md:text-base">Massive police presence.</p>
+                        <ul class="list-disc pl-5 text-slate-300 text-xs md:text-sm space-y-2">
+                            <li><strong class="text-white">60+ dispatches</strong> mapped locally.</li>
+                            <li>Primary Codes: "Domestic Dispute" & "Noise".</li>
+                            <li>See blue zones on threat map.</li>
+                        </ul>
+                    </div>
+
+                    <div class="stat-card bg-slate-800 p-6 md:p-8 rounded-3xl border-l-[10px] border-teal-500 shadow-xl hover:bg-slate-700 transition-colors">
+                        <h3 class="text-xl md:text-2xl font-black text-white mb-2 uppercase">🛡️ AREA SAFETY</h3>
+                        <p class="text-teal-400 font-bold mb-4 text-sm md:text-base">Property crime surging locally.</p>
+                        <ul class="list-disc pl-5 text-slate-300 text-xs md:text-sm space-y-2">
+                            <li>Package theft <strong class="text-white">80% higher</strong> than city.</li>
+                            <li>See 3 red danger zones on map.</li>
+                            <li>High vehicle break-ins reported.</li>
+                        </ul>
+                    </div>
+
+                    <div class="stat-card bg-slate-800 p-6 md:p-8 rounded-3xl border-l-[10px] border-fuchsia-500 shadow-xl hover:bg-slate-700 transition-colors">
+                        <h3 class="text-xl md:text-2xl font-black text-white mb-2 uppercase">🗣️ TENANT WARNINGS</h3>
+                        <p class="text-fuchsia-400 font-bold mb-4 text-sm md:text-base">Past renters left hidden reviews.</p>
+                        <ul class="list-disc pl-5 text-slate-300 text-xs md:text-sm space-y-2">
+                            <li>Scraped from Reddit & Tenant Unions.</li>
+                            <li><strong class="text-white">"Landlord illegally keeps deposits."</strong></li>
+                            <li>"Water pressure drops constantly."</li>
+                        </ul>
+                    </div>
+
+                    <div class="stat-card bg-slate-800 p-6 md:p-8 rounded-3xl border-l-[10px] border-orange-500 shadow-xl hover:bg-slate-700 transition-colors">
+                        <h3 class="text-xl md:text-2xl font-black text-white mb-2 uppercase">🚧 DEMOLITIONS</h3>
+                        <p class="text-orange-400 font-bold mb-4 text-sm md:text-base">Heavy construction activity.</p>
+                        <ul class="list-disc pl-5 text-slate-300 text-xs md:text-sm space-y-2">
+                            <li>15+ active permits in vicinity.</li>
+                            <li>Expect heavy equipment 7 AM to 4 PM.</li>
+                            <li>Pile driving expected next month.</li>
+                        </ul>
+                    </div>
+
+                    <div class="stat-card bg-slate-800 p-6 md:p-8 rounded-3xl border-l-[10px] border-yellow-500 shadow-xl hover:bg-slate-700 transition-colors">
+                        <h3 class="text-xl md:text-2xl font-black text-white mb-2 uppercase">🚛 4:15 AM NOISE</h3>
+                        <p class="text-yellow-400 font-bold mb-4 text-sm md:text-base">Diesel engines idle directly below.</p>
+                        <ul class="list-disc pl-5 text-slate-300 text-xs md:text-sm space-y-2">
+                            <li>Unit is above commercial loading dock.</li>
+                            <li>Waste mgmt arrives <strong class="text-white">Tue/Fri 4:15 AM</strong>.</li>
+                            <li>Guaranteed severe sleep disruption.</li>
+                        </ul>
+                    </div>
+
+                    <div class="stat-card bg-slate-800 p-6 md:p-8 rounded-3xl border-l-[10px] border-cyan-500 shadow-xl hover:bg-slate-700 transition-colors">
+                        <h3 class="text-xl md:text-2xl font-black text-white mb-2 uppercase">✈️ FLIGHT PATH</h3>
+                        <p class="text-cyan-400 font-bold mb-4 text-sm md:text-base">Planes rattle windows at dawn.</p>
+                        <ul class="list-disc pl-5 text-slate-300 text-xs md:text-sm space-y-2">
+                            <li>Beneath Approach Runway 27L.</li>
+                            <li><strong class="text-white">85 flights/day</strong> passing over.</li>
+                            <li>Peak noise corridor hits at 6:00 AM.</li>
+                        </ul>
+                    </div>
+
+                    <div class="stat-card bg-slate-800 p-6 md:p-8 rounded-3xl border-l-[10px] border-purple-500 shadow-xl hover:bg-slate-700 transition-colors">
+                        <h3 class="text-xl md:text-2xl font-black text-white mb-2 uppercase">🐀 311 REPORTS</h3>
+                        <p class="text-purple-400 font-bold mb-4 text-sm md:text-base">Neighbors begging city for help.</p>
+                        <ul class="list-disc pl-5 text-slate-300 text-xs md:text-sm space-y-2">
+                            <li><strong class="text-white">Dozens of complaints</strong> filed recently.</li>
+                            <li>Primary tags: "Rodent Sighting".</li>
+                            <li>Management ignored 80% of citations.</li>
+                        </ul>
+                    </div>
+
+                    <div class="stat-card bg-slate-800 p-6 md:p-8 rounded-3xl border-l-[10px] border-red-500 shadow-xl hover:bg-slate-700 transition-colors pr-8">
+                        <h3 class="text-xl md:text-2xl font-black text-white mb-2 uppercase">☀️ OVEN EFFECT</h3>
+                        <p class="text-red-400 font-bold mb-4 text-sm md:text-base">Unit acts as a summer greenhouse.</p>
+                        <ul class="list-disc pl-5 text-slate-300 text-xs md:text-sm space-y-2">
+                            <li>Unobstructed West-facing glass.</li>
+                            <li>Maximum afternoon UV exposure.</li>
+                            <li>Expect <strong class="text-white">astronomical AC bills</strong> in July.</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+
+            <div class="flex flex-col sm:flex-row gap-4 mt-4 fade-in" style="animation-delay: 0.4s;">
+                <button class="flex-1 bg-slate-100 text-slate-900 hover:bg-white font-black text-lg py-5 rounded-xl transition-colors shadow-lg border-2 border-black uppercase tracking-widest flex items-center justify-center gap-2">⬇️ Download PDF Dossier</button>
+                <button onclick="location.reload()" class="flex-1 bg-slate-800 hover:bg-slate-700 border-2 border-slate-600 text-white font-black text-lg py-5 rounded-xl transition-colors shadow-lg uppercase tracking-widest flex items-center justify-center gap-2">🔄 Scan New Address</button>
+            </div>
+        </div>
+    </main>
+
+    <footer class="w-full bg-slate-950 border-t border-slate-900 py-4 mt-auto z-20">
+        <div class="max-w-7xl mx-auto px-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
+            <div class="flex-1">
+                <div class="font-black text-base text-white tracking-tight flex items-center gap-1 mb-1">Dwell<span class="text-rose-500">Sense</span></div>
+                <p class="text-slate-500 text-[10px] leading-snug max-w-xs">Asymmetric data leverage for renters. Uncovering the truth Big Real Estate wants hidden.</p>
+            </div>
+            <div class="flex flex-wrap gap-8 text-[11px] font-medium text-slate-400">
+                <div class="flex flex-col gap-1"><span class="text-white font-bold uppercase text-[9px] tracking-widest mb-0.5">Product</span><a href="#" class="hover:text-rose-400 transition-colors">Scanner</a></div>
+                <div class="flex flex-col gap-1"><span class="text-white font-bold uppercase text-[9px] tracking-widest mb-0.5">Data</span><a href="#" class="hover:text-rose-400 transition-colors">DOB Permits</a></div>
+                <div class="flex flex-col gap-1"><span class="text-white font-bold uppercase text-[9px] tracking-widest mb-0.5">Legal</span><a href="#" class="hover:text-white transition-colors">Privacy</a></div>
+            </div>
+            <div class="flex flex-col items-start md:items-end gap-2 text-[10px] text-slate-600 text-right">
+                <p>&copy; 2026 DwellSense. Not affiliated with Zillow.</p>
+            </div>
+        </div>
+    </footer>
+
+    <script>
+        let mapInitialized = false;
+        let leafletMap = null;
+        let routeLayerGlow = null;
+        let routeLayerSolid = null;
+        let countdownInterval;
+        
+        let planeMarker = null;
+        let flightStart = [41.8860, -88.1500];
+        let flightEnd = [41.8876, -87.2000];
+        let planeProgress = 0.516; 
+        const baseDuration = 80000; 
+        let lastTime = 0;
+        let animationFrameId = null;
+
+        // Expanded Map Coordinates with Groceries
+        const coords = {
+            target: [41.8868, -87.6595],
+            subway: [41.8856, -87.6521],
+            train: [41.8820, -87.6400],
+            bus: [41.8860, -87.6600],
+            airport: [41.9742, -87.9073],
+            mall: [41.8833, -87.6280],
+            targetstore: [41.8805, -87.6530],
+            walmart: [41.8755, -87.6420],
+            traderjoes: [41.8815, -87.6450]
+        };
+
+        // SAFETY: Fallback Transition Logic
+        let isFinished = false;
+        function transitionToResults() {
+            if(isFinished) return;
+            isFinished = true;
+            
+            try {
+                document.getElementById('loading-section').classList.add('hidden');
+                document.getElementById('results-section').classList.remove('hidden');
+                document.getElementById('side-ads-container').classList.remove('hidden');
+                
+                setTimeout(() => {
+                    initMap(); 
+                    setupDragScroll(); 
+                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                }, 100); 
+            } catch(e) {
+                console.error("Transition error: ", e);
+                document.getElementById('results-section').style.display = 'block';
+            }
+        }
+
+        window.forceSkipAd = function() {
+            if(countdownInterval) clearInterval(countdownInterval);
+            transitionToResults();
+        }
+
+        // SAFETY: Disable button on click to prevent double-firing timers
+        let isScanning = false;
+
+        function runScan() {
+            if(isScanning) return;
+            isScanning = true;
+
+            const btn = document.getElementById('scan-btn');
+            if(btn) {
+                btn.disabled = true;
+                btn.innerHTML = '<span class="animate-pulse">SCANNING...</span>';
+            }
+
+            document.getElementById('hero-section').style.display = 'none';
+            document.getElementById('loading-section').classList.remove('hidden');
+            
+            const totalSeconds = 5; 
+            let secondsLeft = totalSeconds;
+            
+            const timerEl = document.getElementById('ad-timer');
+            if(timerEl) timerEl.textContent = secondsLeft;
+            
+            setTimeout(() => {
+                const pb = document.getElementById('ad-progress');
+                if(pb) {
+                    pb.style.transition = `width ${totalSeconds}s linear`;
+                    pb.style.width = '100%';
+                }
+            }, 50);
+
+            // Show skip button after 2 seconds
+            setTimeout(() => {
+                const skipBtn = document.getElementById('skip-ad-btn');
+                const timerWrapper = document.getElementById('timer-wrapper');
+                if(skipBtn && timerWrapper) {
+                    skipBtn.classList.remove('hidden');
+                    timerWrapper.classList.add('hidden');
+                }
+            }, 2000);
+
+            countdownInterval = setInterval(() => {
+                secondsLeft--;
+                if(timerEl) timerEl.textContent = secondsLeft;
+                
+                if (secondsLeft <= 0) {
+                    clearInterval(countdownInterval);
+                    transitionToResults();
+                }
+            }, 1000);
+        }
+
+        function setupDragScroll() {
+            const sliders = document.querySelectorAll('.horizontal-scroll-container');
+            sliders.forEach(slider => {
+                let isDown = false;
+                let startX;
+                let scrollLeft;
+
+                slider.addEventListener('mousedown', (e) => {
+                    isDown = true;
+                    slider.style.cursor = 'grabbing';
+                    startX = e.pageX - slider.offsetLeft;
+                    scrollLeft = slider.scrollLeft;
+                });
+                slider.addEventListener('mouseleave', () => { isDown = false; slider.style.cursor = 'grab'; });
+                slider.addEventListener('mouseup', () => { isDown = false; slider.style.cursor = 'grab'; });
+                slider.addEventListener('mousemove', (e) => {
+                    if (!isDown) return;
+                    e.preventDefault();
+                    const x = e.pageX - slider.offsetLeft;
+                    const walk = (x - startX) * 2; 
+                    slider.scrollLeft = scrollLeft - walk;
+                });
+            });
+        }
+
+        window.showRoute = function(type) {
+            if(!leafletMap) return;
+            window.hideRoute(); 
+            
+            let dest, color;
+            if(type === 'subway') { dest = coords.subway; color = '#10b981'; }
+            if(type === 'train')  { dest = coords.train; color = '#c4b5fd'; }
+            if(type === 'bus')    { dest = coords.bus; color = '#bef264'; }
+            if(type === 'airport'){ dest = coords.airport; color = '#fbbf24'; }
+            if(type === 'mall')   { dest = coords.mall; color = '#06b6d4'; }
+            if(type === 'targetstore') { dest = coords.targetstore; color = '#ef4444'; }
+            if(type === 'walmart') { dest = coords.walmart; color = '#3b82f6'; }
+            if(type === 'traderjoes') { dest = coords.traderjoes; color = '#f97316'; }
+            
+            if(dest) {
+                routeLayerGlow = L.polyline([coords.target, dest], {
+                    color: color, weight: 10, opacity: 0.35, className: 'route-glow', interactive: false
+                }).addTo(leafletMap);
+                
+                routeLayerSolid = L.polyline([coords.target, dest], {
+                    color: color, weight: 4, className: 'route-anim', opacity: 1, dashArray: '10, 15', interactive: false
+                }).addTo(leafletMap);
+
+                leafletMap.flyToBounds([coords.target, dest], {padding: [50, 50], animate: true, duration: 0.8});
+            }
+        }
+
+        window.hideRoute = function() {
+            if(!leafletMap) return;
+            if(routeLayerGlow) { leafletMap.removeLayer(routeLayerGlow); routeLayerGlow = null; }
+            if(routeLayerSolid) { leafletMap.removeLayer(routeLayerSolid); routeLayerSolid = null; }
+            leafletMap.flyTo(coords.target, 14, {animate: true, duration: 0.8});
+        }
+
+        function animatePlane(currentTime) {
+            if(!leafletMap) {
+                animationFrameId = requestAnimationFrame(animatePlane);
+                return;
+            }
+            if (!lastTime) lastTime = currentTime;
+            let deltaTime = currentTime - lastTime;
+            lastTime = currentTime;
+            if (deltaTime > 100) deltaTime = 16; 
+            
+            let currentZoom = leafletMap.getZoom();
+            let zoomSpeedMultiplier = Math.pow(2, 14 - currentZoom); 
+            
+            planeProgress += ((deltaTime / baseDuration) * zoomSpeedMultiplier);
+            if (planeProgress > 1) planeProgress = 0; 
+            
+            const currentLat = flightStart[0] + (flightEnd[0] - flightStart[0]) * planeProgress;
+            const currentLng = flightStart[1] + (flightEnd[1] - flightStart[1]) * planeProgress;
+            
+            if(planeMarker) {
+                planeMarker.setLatLng([currentLat, currentLng]);
+            }
+            
+            animationFrameId = requestAnimationFrame(animatePlane);
+        }
+
+        function initMap() {
+            if(mapInitialized) return;
+
+            // SAFETY: Check if Leaflet library loaded successfully
+            if (typeof L === 'undefined') {
+                console.error("Leaflet library failed to load.");
+                return;
+            }
+
+            leafletMap = L.map('map-container', {
+                zoomControl: true,
+                scrollWheelZoom: true 
+            }).setView(coords.target, 14);
+            
+            L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+                attribution: '&copy; CARTO',
+                subdomains: 'abcd',
+                maxZoom: 20
+            }).addTo(leafletMap);
+
+            const zones = [
+                { lat: 41.8845, lng: -87.6620, r: 300, c: '#ef4444', popup: 'High Crime Zone' },
+                { lat: 41.8900, lng: -87.6500, r: 250, c: '#ef4444', popup: 'Property Theft Hotspot' },
+                { lat: 41.8790, lng: -87.6600, r: 350, c: '#ef4444', popup: 'High Crime Zone' },
+                { lat: 41.8880, lng: -87.6540, r: 280, c: '#3b82f6', popup: 'Police Activity' },
+                { lat: 41.8810, lng: -87.6680, r: 320, c: '#3b82f6', popup: 'Police Patrol Area' },
+                { lat: 41.8820, lng: -87.6500, r: 220, c: '#a855f7', popup: '311 Nuisance (Rats)' },
+                { lat: 41.8890, lng: -87.6680, r: 250, c: '#f97316', popup: 'Heavy Demolition Zone' }
+            ];
+            zones.forEach(z => {
+                L.circle([z.lat, z.lng], { color: z.c, fillColor: z.c, fillOpacity: 0.15, weight: 2, radius: z.r })
+                 .addTo(leafletMap).bindPopup(`<b>${z.popup}</b>`);
+            });
+
+            const createMarker = (key, iconClass, emoji, popupText, colorHex) => {
+                const marker = L.marker(coords[key], {
+                    icon: L.divIcon({ className: `custom-pin ${iconClass}`, html: emoji, iconSize: [32, 32] }), 
+                    zIndexOffset: 1500
+                }).addTo(leafletMap);
+                
+                marker.bindTooltip(`<b style='color:${colorHex}'>${popupText}</b>`, {
+                    direction: 'top', offset: [0, -15], className: 'custom-tooltip'
+                });
+
+                marker.on('mouseover', () => { window.showRoute(key); });
+                marker.on('mouseout', () => { window.hideRoute(); });
+                return marker;
+            };
+
+            createMarker('subway', 'pin-subway', '🚇', "Morgan Station Subway", "#10b981");
+            createMarker('train', 'pin-train', '🚆', "Ogilvie Commuter Hub", "#c4b5fd");
+            createMarker('bus', 'pin-bus', '🚌', "Halsted Bus Rt 8", "#bef264");
+            createMarker('mall', 'pin-mall', '🛍️', "Block 37 Retail", "#06b6d4");
+            createMarker('airport', 'pin-airport', '✈️', "O'Hare Int'l (ORD)", "#fbbf24");
+            
+            // New Grocery Map Pins
+            createMarker('targetstore', 'pin-targetstore', '🎯', "Target Grocery", "#ef4444");
+            createMarker('walmart', 'pin-walmart', '🛒', "Walmart Supercenter", "#3b82f6");
+            createMarker('traderjoes', 'pin-traderjoes', '🥑', "Trader Joe's", "#f97316");
+
+            const targetIcon = L.divIcon({ className: 'pin-target', html: "📍", iconSize: [40, 40], iconAnchor: [20, 40] });
+            L.marker(coords.target, {icon: targetIcon, zIndexOffset: 2000}).addTo(leafletMap).bindPopup("<b style='color:#f43f5e'>Target Property</b><br>1284 W Fulton St").openPopup();
+
+            // FIXED: Added colorHex and labelText parameters to function signature
+            function spawnSwarm(iconClass, emoji, count, spread, labelText, colorHex) {
+                const icon = L.divIcon({ className: `custom-pin ${iconClass} pin-mini`, html: emoji });
+                for(let i=0; i<count; i++) {
+                    let rLat = coords.target[0] + (Math.random() - 0.5) * spread;
+                    let rLng = coords.target[1] + (Math.random() - 0.5) * spread * 1.5; 
+                    
+                    const marker = L.marker([rLat, rLng], {icon: icon});
+                    
+                    marker.bindTooltip(`<b style='color:${colorHex}'>${labelText}</b>`, {
+                        direction: 'top', offset: [0, -10], className: 'custom-tooltip'
+                    });
+                    
+                    marker.bindPopup(`<b style='color:${colorHex}'>${labelText}</b><br><span style='font-size:10px; color:#94a3b8;'>Logged in last 30 days.</span>`);
+                    marker.addTo(leafletMap);
+                }
+            }
+            
+            // REDUCED COUNTS: To guarantee smooth performance and no freezing
+            spawnSwarm('pin-police', '🚓', 40, 0.06, '911 Dispatch: Police', '#60a5fa');
+            spawnSwarm('pin-rat', '🐀', 30, 0.05, '311 Report: Rodents', '#c084fc');
+            spawnSwarm('pin-demo', '🚧', 15, 0.04, 'Active Building Permit', '#fb923c');
+            spawnSwarm('pin-truck', '🚛', 25, 0.05, 'Commercial Noise Log', '#facc15');
+            spawnSwarm('pin-bus', '🚌', 15, 0.06, 'City Bus Stop', '#d9f99d');
+
+            L.polyline([flightStart, flightEnd], {
+                color: '#06b6d4', weight: 4, dashArray: '10, 15', opacity: 0.8
+            }).addTo(leafletMap);
+
+            const planeIcon = L.divIcon({ className: '', html: '<div class="animated-plane">✈️</div>', iconSize: [0, 0] });
+            planeMarker = L.marker(flightStart, {icon: planeIcon, zIndexOffset: 2500, interactive: false}).addTo(leafletMap);
+
+            animationFrameId = requestAnimationFrame(animatePlane);
+
+            setTimeout(() => { leafletMap.invalidateSize(); }, 200);
+            mapInitialized = true;
+        }
+    </script>
+</body>
+</html>
