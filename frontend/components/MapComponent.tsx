@@ -194,6 +194,7 @@ export default function MapComponent({ mapData, logistics, activeRoute }: Props)
         background: rgba(15,23,42,0.92); border: 1px solid ${color};
         border-radius: 50%; backdrop-filter: blur(2px);
         transition: transform 0.15s, box-shadow 0.15s;
+        transform-origin: center center;
         pointer-events: auto;
       `;
       el.textContent = SWARM_EMOJI[pin.type] || "📋";
@@ -243,6 +244,7 @@ export default function MapComponent({ mapData, logistics, activeRoute }: Props)
         border-radius: 50%; backdrop-filter: blur(2px);
         box-shadow: 0 0 12px ${card.color}66;
         transition: transform 0.2s, box-shadow 0.2s;
+        transform-origin: center center;
       `;
       el.textContent = PIN_EMOJI[card.type] || "📍";
 

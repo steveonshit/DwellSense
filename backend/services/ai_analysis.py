@@ -169,7 +169,7 @@ Generate the Danger Score and 9-point threat analysis based on this real data.""
     try:
         response = await asyncio.wait_for(
             asyncio.to_thread(model.generate_content, prompt),
-            timeout=5.0,
+            timeout=45.0,
         )
         raw = response.text.strip()
         # Strip any accidental markdown code fences
@@ -181,7 +181,7 @@ Generate the Danger Score and 9-point threat analysis based on this real data.""
         _analysis_cache[cache_key] = result
         return result
     except asyncio.TimeoutError:
-        logger.warning("Gemini timed out after 25s — using fallback analysis.")
+        logger.warning("Gemini timed out after 45s — using fallback analysis.")
         return _fallback_analysis(crime, reports_311, permits)
     except Exception as e:
         logger.warning(f"Gemini error: {e} — using fallback analysis.")
