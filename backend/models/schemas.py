@@ -43,7 +43,7 @@ class Zone(BaseModel):
 class SwarmPin(BaseModel):
     lat: float
     lng: float
-    type: Literal["police", "rat", "permit", "truck", "bus"]
+    type: Literal["police", "rat", "permit", "truck", "bus", "noise", "fire", "water", "trash", "graffiti", "construction", "report"]
     label: str
 
 

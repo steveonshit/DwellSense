@@ -368,7 +368,7 @@ def build_swarm(crime: list[dict], reports_311: list[dict], permits: list[dict])
         if row.get("lat") and row.get("lng"):
             swarm.append(SwarmPin(
                 lat=row["lat"], lng=row["lng"],
-                type="construction",
+                type="permit",
                 label=f"Permit: {row.get('permit_type', 'Construction')}",
             ))
 
