@@ -2,5 +2,13 @@
   "framework": "nextjs",
   "buildCommand": "npm run build",
   "devCommand": "npm run dev",
-  "installCommand": "npm install"
+  "installCommand": "npm install",
+  "functions": {
+    "app/api/scan/route.ts": {
+      "maxDuration": 60
+    },
+    "app/api/pdf/route.ts": {
+      "maxDuration": 60
+    }
+  }
 }
