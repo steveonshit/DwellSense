@@ -284,7 +284,7 @@ export default function MapComponent({ mapData, logistics, activeRoute }: Props)
       .setLngLat([mapData.target.lng, mapData.target.lat])
       .setPopup(popup)
       .addTo(map);
-    marker.getPopup().addTo(map);
+    marker.getPopup()?.addTo(map);
     markersRef.current.push(marker);
   };
 
