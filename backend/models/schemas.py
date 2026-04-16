@@ -71,3 +71,5 @@ class ScanResponse(BaseModel):
     logistics: list[LogisticsCard]
     threat_cards: list[ThreatCard]
     map_data: MapData
+    # True when backend loaded a non-placeholder GEMINI_API_KEY for this scan (see /scan JSON in DevTools).
+    gemini_configured: bool = False

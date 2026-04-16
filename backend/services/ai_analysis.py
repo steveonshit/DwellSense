@@ -1,64 +1,75 @@
 """
-Google Gemini AI — synthesizes raw city data into the Danger Score
-and 9-point threat analysis cards.
+Google Gemini AI — writes threat-card bullets only. Card chrome (emoji, colors,
+titles) and danger score come from Python (services.threat_card_layout).
 """
 
 import os
+import re
 import json
 import asyncio
 import hashlib
 import logging
-from functools import lru_cache
 import google.generativeai as genai
-from models.schemas import Coordinate, ThreatCard, FlightPath, LogisticsCard
+from models.schemas import Coordinate, FlightPath, LogisticsCard
+from services.threat_card_layout import (
+    cards_from_specs_and_bullets,
+    compute_risk_from_counts,
+    ordered_card_ids,
+)
 
 logger = logging.getLogger(__name__)
+
+# Allow override via env (Railway / local). Smaller Gemini output should finish faster than before.
+_GEMINI_TIMEOUT = float(os.getenv("GEMINI_TIMEOUT_SECONDS", "90"))
+
+_PLACEHOLDER_GEMINI_KEYS = frozenset(
+    {
+        "",
+        "your_gemini_api_key_here",
+        "your_google_ai_api_key_here",
+    }
+)
+
+
+def _effective_gemini_key(raw: str | None = None) -> str:
+    """Strip key / BOM; treat empty and common .env.example placeholders as unset."""
+    s = (raw if raw is not None else (os.getenv("GEMINI_API_KEY") or "")).strip().lstrip("\ufeff")
+    if not s:
+        return ""
+    lower = s.lower()
+    if lower in _PLACEHOLDER_GEMINI_KEYS or "your_gemini_api_key" in lower:
+        return ""
+    if s.startswith("<") and s.endswith(">"):
+        return ""
+    return s
 
 # Simple in-memory cache: address hash → analysis result
 _analysis_cache: dict[str, dict] = {}
 
+BULLETS_SYSTEM_PROMPT = """You are DwellSense, a brutally honest real estate forensics AI for renters.
+You receive a data brief about one NYC address. Write ONLY the nine threat-card bullet lists.
 
-SYSTEM_PROMPT = """You are DwellSense, a brutally honest real estate forensics AI. You are on the renter's side.
-You analyze raw municipal data and produce a data-driven Danger Score (0–100) and a 9-point threat analysis.
+Rules:
+- Each bullet is one short sentence. Use specific numbers from the brief when possible.
+- No markdown. No nested JSON inside strings.
+- TONE: Direct, data-driven, slightly adversarial. Bullets should feel like insider knowledge, not generic warnings.
 
-SCORING GUIDE:
-- 80–100 = EXTREME (multiple serious threats)
-- 60–79  = HIGH (significant issues)
-- 40–59  = MODERATE (some concerns)
-- 0–39   = LOW (relatively safe)
-
-TONE: Direct, data-driven, slightly adversarial. Use specific numbers from the data. Write in ALL CAPS for threat titles.
-Write bullets that feel like insider knowledge, not generic warnings.
-
-Return ONLY valid JSON matching this exact structure, no markdown, no extra text:
+Return ONLY valid JSON (no markdown fences, no extra text) in this exact shape:
 {
-  "danger_score": <integer 0-100>,
-  "risk_level": "<LOW|MODERATE|HIGH|EXTREME>",
-  "risk_label": "<short label like 'EXTREME RISK DETECTED'>",
-  "risk_description": "<one sentence summary>",
-  "threat_cards": [
-    {
-      "id": "<snake_case_id>",
-      "emoji": "<single emoji>",
-      "title": "<ALL CAPS title>",
-      "subtitle": "<one punchy sentence>",
-      "border_color": "<hex color>",
-      "text_color": "<hex color>",
-      "bullets": ["<bullet 1>", "<bullet 2>", "<bullet 3>"]
-    }
-  ]
+  "bullets": {
+    "high_churn": ["<bullet 1>", "<bullet 2>", "<bullet 3>"],
+    "police_calls": ["...", "...", "..."],
+    "area_safety": ["...", "...", "..."],
+    "tenant_warnings": ["...", "...", "..."],
+    "demolitions": ["...", "...", "..."],
+    "noise_schedule": ["...", "...", "..."],
+    "flight_path": ["...", "...", "..."],
+    "reports_311": ["...", "...", "..."],
+    "oven_effect": ["...", "...", "..."]
+  }
 }
 
-Always produce exactly 9 threat cards in this order:
-1. high_churn (🏃‍♂️, rose, #f43f5e/#fda4af)
-2. police_calls (🚓, blue, #3b82f6/#93c5fd)
-3. area_safety (🛡️, teal, #14b8a6/#5eead4)
-4. tenant_warnings (🗣️, fuchsia, #d946ef/#f0abfc)
-5. demolitions (🚧, orange, #f97316/#fdba74)
-6. noise_schedule (🚛, yellow, #eab308/#fde047)
-7. flight_path (✈️, cyan, #06b6d4/#67e8f9)
-8. reports_311 (🐀, purple, #a855f7/#d8b4fe)
-9. oven_effect (☀️, red, #ef4444/#fca5a5)
+You must include all nine keys exactly as shown. Each value must be an array of exactly three strings.
 """
 
 
@@ -105,6 +116,142 @@ def _summarize_logistics(logistics: list[LogisticsCard]) -> str:
     return "\n".join(lines) if lines else "No logistics data."
 
 
+def _extract_text_from_response(response) -> str:
+    """
+    google-generativeai sometimes raises on .text when content is blocked or empty.
+    Fall back to walking candidates/parts.
+    """
+    try:
+        t = (response.text or "").strip()
+        if t:
+            return t
+    except (ValueError, AttributeError) as e:
+        logger.warning("Gemini response.text unavailable: %s", e)
+
+    try:
+        cand = response.candidates[0]
+        parts = cand.content.parts
+        chunks = []
+        for p in parts:
+            if hasattr(p, "text") and p.text:
+                chunks.append(p.text)
+        return "\n".join(chunks).strip()
+    except (IndexError, AttributeError, KeyError) as e:
+        logger.warning("Could not read Gemini candidates: %s", e)
+    return ""
+
+
+def _parse_ai_json(raw: str) -> dict:
+    """Parse JSON from model output; tolerate markdown fences and leading junk."""
+    s = raw.strip()
+    if s.startswith("```"):
+        s = s.split("```", 2)[1] if "```" in s else s
+        s = s.strip()
+        if s.lower().startswith("json"):
+            s = s[4:].lstrip()
+    try:
+        return json.loads(s)
+    except json.JSONDecodeError:
+        pass
+    m = re.search(r"\{[\s\S]*\}", s)
+    if m:
+        try:
+            return json.loads(m.group(0))
+        except json.JSONDecodeError:
+            pass
+    raise ValueError(f"Could not parse JSON from Gemini output (first 200 chars): {s[:200]!r}")
+
+
+def _third_bullet_no_key() -> str:
+    return "Add GEMINI_API_KEY to your backend environment for AI-written threat cards."
+
+
+def _third_bullet_ai_failed() -> str:
+    return "AI summary unavailable this scan; counts and map data above are still accurate."
+
+
+def _normalize_three(row: list[str] | None) -> list[str]:
+    if not row:
+        return ["", "", ""]
+    b = [str(x).strip() if x is not None else "" for x in row[:3]]
+    while len(b) < 3:
+        b.append("")
+    return b
+
+
+def _fallback_bullets_by_id(
+    crime_count: int,
+    reports_count: int,
+    permit_count: int,
+    eviction_count: int,
+    bullet_extra: str,
+) -> dict[str, list[str]]:
+    """Template bullets when Gemini is off or a card fails validation."""
+    return {
+        "high_churn": [
+            "Eviction records found nearby.",
+            "High turnover signals problem landlords.",
+            bullet_extra,
+        ],
+        "police_calls": [
+            f"{crime_count} incidents logged in last 30 days.",
+            "See blue zones on the threat map.",
+            bullet_extra,
+        ],
+        "area_safety": [
+            "Crime data pulled from NYC Open Data.",
+            "See red zones on the threat map.",
+            bullet_extra,
+        ],
+        "tenant_warnings": [
+            "Check HPD building violations for this address.",
+            "Past violations indicate maintenance neglect.",
+            bullet_extra,
+        ],
+        "demolitions": [
+            f"{permit_count} active permits found nearby.",
+            "Heavy equipment possible during business hours.",
+            bullet_extra,
+        ],
+        "noise_schedule": [
+            "311 noise complaints logged nearby.",
+            "Check for commercial loading docks on the block.",
+            bullet_extra,
+        ],
+        "flight_path": [
+            "Flight corridor analysis computed.",
+            "See cyan flight path line on map.",
+            bullet_extra,
+        ],
+        "reports_311": [
+            f"{reports_count} 311 reports filed nearby.",
+            "Primary complaints visible on map.",
+            bullet_extra,
+        ],
+        "oven_effect": [
+            "West-facing units trap afternoon heat.",
+            "Check unit orientation before signing.",
+            bullet_extra,
+        ],
+    }
+
+
+def _merge_bullets_with_fallback(
+    template: dict[str, list[str]],
+    gemini: dict[str, list[str]],
+) -> dict[str, list[str]]:
+    """Prefer Gemini strings; fall back per card if a row is empty or too thin."""
+    out: dict[str, list[str]] = {}
+    for cid in ordered_card_ids():
+        g = _normalize_three(gemini.get(cid) if isinstance(gemini.get(cid), list) else None)
+        nonempty = sum(1 for x in g if x.strip())
+        if nonempty >= 2:
+            out[cid] = g
+        else:
+            out[cid] = template[cid][:]
+    return out
+
+
 async def analyze(
     address: str,
     coord: Coordinate,
@@ -116,25 +263,53 @@ async def analyze(
     flight_path: FlightPath | None,
 ) -> dict:
     """
-    Calls Gemini 2.0 Flash with all available data.
-    Returns parsed JSON dict with danger_score, risk_level, threat_cards, etc.
-    Falls back to a structured fallback dict if Gemini is unavailable.
+    Python builds danger score + card chrome; Gemini writes bullets only.
+    Falls back to template bullets if Gemini is unavailable.
     """
-    # Cache key: address + rough crime/311 counts (invalidates if data changes)
+    crime_count = len(crime)
+    reports_count = len(reports_311)
+    permit_count = len(permits)
+    eviction_count = len(evictions)
+
+    raw_gemini_env = (os.getenv("GEMINI_API_KEY") or "").strip()
+    gemini_api_key = _effective_gemini_key(raw_gemini_env)
+    if raw_gemini_env and not gemini_api_key:
+        logger.warning(
+            "GEMINI_API_KEY is set but looks like a placeholder or template; Gemini is disabled. "
+            "Use a real key from Google AI Studio on the backend (Railway), not the frontend."
+        )
+    key_fp = hashlib.md5(gemini_api_key.encode()).hexdigest()[:12] if gemini_api_key else "none"
     cache_key = hashlib.md5(
-        f"{address}:{len(crime)}:{len(reports_311)}:{len(permits)}".encode()
+        f"{address}:{crime_count}:{reports_count}:{permit_count}:{eviction_count}:{key_fp}".encode()
     ).hexdigest()
     if cache_key in _analysis_cache:
-        return _analysis_cache[cache_key]
+        hit = _analysis_cache[cache_key]
+        if "gemini_configured" not in hit:
+            return {**hit, "gemini_configured": bool(gemini_api_key)}
+        return hit
 
-    gemini_api_key = os.getenv("GEMINI_API_KEY", "")
+    risk = compute_risk_from_counts(crime_count, reports_count, permit_count, eviction_count)
+
     if not gemini_api_key:
-        return _fallback_analysis(crime, reports_311, permits)
+        fb = _fallback_bullets_by_id(
+            crime_count, reports_count, permit_count, eviction_count, _third_bullet_no_key()
+        )
+        result = {
+            **risk,
+            "threat_cards": cards_from_specs_and_bullets(fb),
+            "gemini_configured": False,
+        }
+        _analysis_cache[cache_key] = result
+        return result
 
     genai.configure(api_key=gemini_api_key)
     model = genai.GenerativeModel(
         model_name="gemini-2.0-flash",
-        system_instruction=SYSTEM_PROMPT,
+        system_instruction=BULLETS_SYSTEM_PROMPT,
+        generation_config=genai.GenerationConfig(
+            temperature=0.35,
+            response_mime_type="application/json",
+        ),
     )
 
     flight_text = (
@@ -156,7 +331,7 @@ BUILDING PERMITS (last 90 days, within 0.5 miles):
 {_summarize_permits(permits)}
 
 EVICTION RECORDS (nearby, all time):
-{len(evictions)} eviction filings found near this address.
+{eviction_count} eviction filings found near this address.
 
 TRANSIT & GROCERY LOGISTICS:
 {_summarize_logistics(logistics)}
@@ -164,110 +339,67 @@ TRANSIT & GROCERY LOGISTICS:
 FLIGHT PATH ANALYSIS:
 {flight_text}
 
-Generate the Danger Score and 9-point threat analysis based on this real data."""
+Write the 27 bullets (three per threat theme) based on this real data. Do not invent statistics beyond what is implied above."""
 
-    try:
+    template_fb = _fallback_bullets_by_id(
+        crime_count, reports_count, permit_count, eviction_count, _third_bullet_ai_failed()
+    )
+
+    async def _call_gemini_bullets() -> dict[str, list[str]]:
         response = await asyncio.wait_for(
             asyncio.to_thread(model.generate_content, prompt),
-            timeout=45.0,
+            timeout=_GEMINI_TIMEOUT,
         )
-        raw = response.text.strip()
-        # Strip any accidental markdown code fences
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-        result = json.loads(raw)
-        _analysis_cache[cache_key] = result
-        return result
-    except asyncio.TimeoutError:
-        logger.warning("Gemini timed out after 45s — using fallback analysis.")
-        return _fallback_analysis(crime, reports_311, permits)
-    except Exception as e:
-        logger.warning(f"Gemini error: {e} — using fallback analysis.")
-        return _fallback_analysis(crime, reports_311, permits)
+        raw = _extract_text_from_response(response)
+        if not raw:
+            fb = getattr(response, "prompt_feedback", None)
+            logger.error("Gemini returned empty text. prompt_feedback=%s", fb)
+            raise ValueError("Empty Gemini response (blocked or no candidates)")
+        data = _parse_ai_json(raw)
+        inner = data.get("bullets") if isinstance(data, dict) else None
+        if not isinstance(inner, dict):
+            raise ValueError("Missing or invalid 'bullets' object in Gemini JSON")
+        # Coerce to str lists; missing keys handled in merge
+        gemini_map: dict[str, list[str]] = {}
+        for cid in ordered_card_ids():
+            row = inner.get(cid)
+            gemini_map[cid] = row if isinstance(row, list) else []
+        return _merge_bullets_with_fallback(template_fb, gemini_map)
 
-
-def _fallback_analysis(crime: list[dict], reports_311: list[dict], permits: list[dict]) -> dict:
-    """
-    Returns a basic analysis when Gemini is not available.
-    Scores are estimated from raw data counts.
-    """
-    crime_count = len(crime)
-    reports_count = len(reports_311)
-    permit_count = len(permits)
-
-    score = min(100, int((crime_count * 0.4) + (reports_count * 0.3) + (permit_count * 0.5)))
-    score = max(10, score)
-
-    if score >= 80:
-        risk_level, risk_label = "EXTREME", "EXTREME RISK DETECTED"
-    elif score >= 60:
-        risk_level, risk_label = "HIGH", "HIGH RISK DETECTED"
-    elif score >= 40:
-        risk_level, risk_label = "MODERATE", "MODERATE RISK"
-    else:
-        risk_level, risk_label = "LOW", "LOW RISK"
-
-    return {
-        "danger_score": score,
-        "risk_level": risk_level,
-        "risk_label": risk_label,
-        "risk_description": f"Analysis based on {crime_count} crime reports, {reports_count} 311 calls, and {permit_count} permits nearby.",
-        "threat_cards": [
-            {
-                "id": "high_churn", "emoji": "🏃‍♂️", "title": "TENANT CHURN",
-                "subtitle": "Historical turnover data from NYC court records.",
-                "border_color": "#f43f5e", "text_color": "#fda4af",
-                "bullets": ["Eviction records found nearby.", "High turnover signals problem landlords.", "Add GEMINI_API_KEY for detailed AI analysis."],
-            },
-            {
-                "id": "police_calls", "emoji": "🚓", "title": "POLICE CALLS",
-                "subtitle": "NYPD dispatch activity in the area.",
-                "border_color": "#3b82f6", "text_color": "#93c5fd",
-                "bullets": [f"{crime_count} incidents logged in last 30 days.", "See blue zones on the threat map.", "Add GEMINI_API_KEY for detailed AI analysis."],
-            },
-            {
-                "id": "area_safety", "emoji": "🛡️", "title": "AREA SAFETY",
-                "subtitle": "Property and violent crime density.",
-                "border_color": "#14b8a6", "text_color": "#5eead4",
-                "bullets": ["Crime data pulled from NYC Open Data.", "See red zones on the threat map.", "Add GEMINI_API_KEY for detailed AI analysis."],
-            },
-            {
-                "id": "tenant_warnings", "emoji": "🗣️", "title": "TENANT WARNINGS",
-                "subtitle": "NYC HPD housing violation records.",
-                "border_color": "#d946ef", "text_color": "#f0abfc",
-                "bullets": ["Check HPD building violations for this address.", "Past violations indicate maintenance neglect.", "Add GEMINI_API_KEY for detailed AI analysis."],
-            },
-            {
-                "id": "demolitions", "emoji": "🚧", "title": "DEMOLITIONS",
-                "subtitle": "Active DOB permits near the property.",
-                "border_color": "#f97316", "text_color": "#fdba74",
-                "bullets": [f"{permit_count} active permits found nearby.", "Heavy equipment possible during business hours.", "Add GEMINI_API_KEY for detailed AI analysis."],
-            },
-            {
-                "id": "noise_schedule", "emoji": "🚛", "title": "NOISE SCHEDULE",
-                "subtitle": "Commercial and municipal noise sources.",
-                "border_color": "#eab308", "text_color": "#fde047",
-                "bullets": ["311 noise complaints logged nearby.", "Check for commercial loading docks on the block.", "Add GEMINI_API_KEY for detailed AI analysis."],
-            },
-            {
-                "id": "flight_path", "emoji": "✈️", "title": "FLIGHT PATH",
-                "subtitle": "Proximity to NYC airport approach corridors.",
-                "border_color": "#06b6d4", "text_color": "#67e8f9",
-                "bullets": ["Flight corridor analysis computed.", "See cyan flight path line on map.", "Add GEMINI_API_KEY for detailed AI analysis."],
-            },
-            {
-                "id": "reports_311", "emoji": "🐀", "title": "311 REPORTS",
-                "subtitle": "City service complaints from neighbors.",
-                "border_color": "#a855f7", "text_color": "#d8b4fe",
-                "bullets": [f"{reports_count} 311 reports filed nearby.", "Primary complaints visible on map.", "Add GEMINI_API_KEY for detailed AI analysis."],
-            },
-            {
-                "id": "oven_effect", "emoji": "☀️", "title": "OVEN EFFECT",
-                "subtitle": "Sun exposure and AC cost risk.",
-                "border_color": "#ef4444", "text_color": "#fca5a5",
-                "bullets": ["West-facing units trap afternoon heat.", "Check unit orientation before signing.", "Add GEMINI_API_KEY for detailed AI analysis."],
-            },
-        ],
-    }
+    for attempt in range(2):
+        try:
+            bullets_by_id = await _call_gemini_bullets()
+            result = {
+                **risk,
+                "threat_cards": cards_from_specs_and_bullets(bullets_by_id),
+                "gemini_configured": True,
+            }
+            _analysis_cache[cache_key] = result
+            return result
+        except asyncio.TimeoutError:
+            logger.error(
+                "Gemini timed out after %.1fs — using fallback bullets. Increase GEMINI_TIMEOUT_SECONDS if needed.",
+                _GEMINI_TIMEOUT,
+            )
+            fb = template_fb
+            result = {
+                **risk,
+                "threat_cards": cards_from_specs_and_bullets(fb),
+                "gemini_configured": True,
+            }
+            _analysis_cache[cache_key] = result
+            return result
+        except Exception as e:
+            if attempt == 0:
+                logger.warning("Gemini attempt 1 failed (%s), retrying once…", e)
+                await asyncio.sleep(1.5)
+                continue
+            logger.exception("Gemini failed after retry — using fallback bullets")
+            fb = template_fb
+            result = {
+                **risk,
+                "threat_cards": cards_from_specs_and_bullets(fb),
+                "gemini_configured": True,
+            }
+            _analysis_cache[cache_key] = result
+            return result

@@ -13,3 +13,5 @@ frontend/.env.local
 # System
 .DS_Store
 *.log
+.vercel
+.env*.local

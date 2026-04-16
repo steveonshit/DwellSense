@@ -35,7 +35,19 @@ export interface Zone {
 export interface SwarmPin {
   lat: number;
   lng: number;
-  type: "police" | "rat" | "permit" | "truck" | "bus";
+  type:
+    | "police"
+    | "rat"
+    | "permit"
+    | "truck"
+    | "bus"
+    | "noise"
+    | "fire"
+    | "water"
+    | "trash"
+    | "graffiti"
+    | "construction"
+    | "report";
   label: string;
 }
 
@@ -63,4 +75,6 @@ export interface ScanResult {
   logistics: LogisticsCard[];
   threat_cards: ThreatCard[];
   map_data: MapData;
+  /** From backend: whether a real GEMINI_API_KEY was loaded (check Network → /api/scan response). */
+  gemini_configured?: boolean;
 }

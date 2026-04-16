@@ -101,4 +101,5 @@ async def scan(request: ScanRequest):
         logistics=logistics,
         threat_cards=threat_cards,
         map_data=map_data,
+        gemini_configured=bool(ai_result.get("gemini_configured", False)),
     )

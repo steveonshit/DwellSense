@@ -43,6 +43,12 @@ export default function DangerBanner({ result }: Props) {
           {result.risk_label}
         </h2>
         <p className={`${colors.text} text-sm mt-1 font-bold`}>{result.risk_description}</p>
+        {result.gemini_configured === false ? (
+          <p className="text-amber-200/90 text-xs mt-2 font-semibold max-w-xl leading-snug">
+            Backend reports Gemini is off (<span className="font-mono text-amber-100">gemini_configured: false</span>).
+            Add <span className="font-mono text-amber-100">GEMINI_API_KEY</span> to your Railway API service variables, redeploy/restart, then run a new scan.
+          </p>
+        ) : null}
       </div>
 
       <div className="text-center mt-4 md:mt-0 bg-black/40 px-4 py-2 rounded-xl border border-white/10 backdrop-blur-sm shrink-0 flex items-center gap-3">

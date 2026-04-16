@@ -9,6 +9,7 @@ mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || "";
 const SWARM_EMOJI: Record<string, string> = {
   police:       "🚓",
   rat:          "🐀",
+  permit:       "🚧",
   construction: "🚧",
   truck:        "🚛",
   bus:          "🚌",
@@ -23,6 +24,7 @@ const SWARM_EMOJI: Record<string, string> = {
 const SWARM_COLOR: Record<string, string> = {
   police:       "#60a5fa",
   rat:          "#c084fc",
+  permit:       "#fb923c",
   construction: "#fb923c",
   truck:        "#facc15",
   bus:          "#d9f99d",
@@ -187,17 +189,23 @@ export default function MapComponent({ mapData, logistics, activeRoute }: Props)
   const addSwarm = (map: mapboxgl.Map) => {
     mapData.swarm.forEach((pin) => {
       const color = SWARM_COLOR[pin.type] || "#94a3b8";
-      const el = document.createElement("div");
-      el.style.cssText = `
+      // Outer node: Mapbox sets transform on this element for map position — never set transform here.
+      const outer = document.createElement("div");
+      outer.style.cssText = `
+        width: 22px; height: 22px; cursor: pointer; pointer-events: auto;
+        display: flex; align-items: center; justify-content: center;
+      `;
+      const inner = document.createElement("div");
+      inner.style.cssText = `
         font-size: 12px; display: flex; align-items: center; justify-content: center;
-        width: 22px; height: 22px; cursor: pointer;
+        width: 100%; height: 100%;
         background: rgba(15,23,42,0.92); border: 1px solid ${color};
         border-radius: 50%; backdrop-filter: blur(2px);
         transition: transform 0.15s, box-shadow 0.15s;
         transform-origin: center center;
-        pointer-events: auto;
       `;
-      el.textContent = SWARM_EMOJI[pin.type] || "📋";
+      inner.textContent = SWARM_EMOJI[pin.type] || "📋";
+      outer.appendChild(inner);
 
       // Popup shown on hover only — prevents icons from jumping on click
       const popup = new mapboxgl.Popup({
@@ -210,18 +218,18 @@ export default function MapComponent({ mapData, logistics, activeRoute }: Props)
         `<div style="font-size:10px;color:#94a3b8">Reported in last 30 days</div>`
       );
 
-      el.addEventListener("mouseenter", () => {
-        el.style.transform = "scale(1.4)";
-        el.style.zIndex = "9999";
+      outer.addEventListener("mouseenter", () => {
+        inner.style.transform = "scale(1.4)";
+        outer.style.zIndex = "9999";
         popup.setLngLat([pin.lng, pin.lat]).addTo(map);
       });
-      el.addEventListener("mouseleave", () => {
-        el.style.transform = "scale(1)";
-        el.style.zIndex = "";
+      outer.addEventListener("mouseleave", () => {
+        inner.style.transform = "";
+        outer.style.zIndex = "";
         popup.remove();
       });
 
-      const marker = new mapboxgl.Marker({ element: el, anchor: "center" })
+      const marker = new mapboxgl.Marker({ element: outer, anchor: "center" })
         .setLngLat([pin.lng, pin.lat])
         .addTo(map);
       markersRef.current.push(marker);
@@ -236,17 +244,23 @@ export default function MapComponent({ mapData, logistics, activeRoute }: Props)
     };
 
     logistics.forEach((card) => {
-      const el = document.createElement("div");
-      el.style.cssText = `
+      const outer = document.createElement("div");
+      outer.style.cssText = `
+        width: 36px; height: 36px; cursor: pointer; pointer-events: auto;
+        display: flex; align-items: center; justify-content: center;
+      `;
+      const inner = document.createElement("div");
+      inner.style.cssText = `
         font-size: 20px; display: flex; align-items: center; justify-content: center;
-        width: 36px; height: 36px; cursor: pointer;
+        width: 100%; height: 100%;
         background: rgba(30,41,59,0.9); border: 2px solid ${card.color};
         border-radius: 50%; backdrop-filter: blur(2px);
         box-shadow: 0 0 12px ${card.color}66;
         transition: transform 0.2s, box-shadow 0.2s;
         transform-origin: center center;
       `;
-      el.textContent = PIN_EMOJI[card.type] || "📍";
+      inner.textContent = PIN_EMOJI[card.type] || "📍";
+      outer.appendChild(inner);
 
       const popup = new mapboxgl.Popup({
         offset: 20,
@@ -258,16 +272,16 @@ export default function MapComponent({ mapData, logistics, activeRoute }: Props)
         `<div style="font-size:10px;color:#94a3b8;margin-top:2px">${card.category} · ${card.distance_value} ${card.distance_unit} away</div>`
       );
 
-      el.addEventListener("mouseenter", () => {
-        el.style.transform = "scale(1.15)";
+      outer.addEventListener("mouseenter", () => {
+        inner.style.transform = "scale(1.15)";
         popup.setLngLat([card.coordinates.lng, card.coordinates.lat]).addTo(map);
       });
-      el.addEventListener("mouseleave", () => {
-        el.style.transform = "scale(1)";
+      outer.addEventListener("mouseleave", () => {
+        inner.style.transform = "";
         popup.remove();
       });
 
-      const marker = new mapboxgl.Marker({ element: el, anchor: "center" })
+      const marker = new mapboxgl.Marker({ element: outer, anchor: "center" })
         .setLngLat([card.coordinates.lng, card.coordinates.lat])
         .addTo(map);
       markersRef.current.push(marker);

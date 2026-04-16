@@ -38,18 +38,24 @@
         }
         .leaflet-control-zoom a:hover { background-color: #334155 !important; }
 
-        /* Custom Glowing Map Pins */
+        /* Custom Glowing Map Pins — transform-origin keeps Leaflet anchor stable on hover scale */
         .custom-pin {
             display: flex; align-items: center; justify-content: center; font-size: 14px;
             background: rgba(30, 41, 59, 0.9); border: 1px solid; border-radius: 50%;
             box-shadow: 0 2px 4px rgba(0,0,0,0.5); backdrop-filter: blur(2px); cursor: pointer;
             transition: transform 0.2s, box-shadow 0.2s;
+            transform-origin: center center;
         }
-        .custom-pin:hover { transform: scale(1.15); box-shadow: 0 0 15px rgba(255,255,255,0.4); z-index: 5000 !important; }
+        .custom-pin:hover {
+            transform: scale(1.15);
+            transform-origin: center center;
+            box-shadow: 0 0 15px rgba(255,255,255,0.4);
+            z-index: 5000 !important;
+        }
         .pin-target { border-color: #f43f5e; box-shadow: 0 0 25px rgba(244,63,94,1); font-size: 28px; background: transparent; border: none; }
         
-        /* Data Swarm Pins (Micro Pins) */
-        .pin-mini { font-size: 12px; width: 22px !important; height: 22px !important; border-width: 1px; margin-left: -11px; margin-top: -11px; }
+        /* Data Swarm Pins — iconSize/iconAnchor in JS match 22×22 (no negative margins; avoids hover jump) */
+        .pin-mini { font-size: 12px; width: 22px !important; height: 22px !important; border-width: 1px; }
         .pin-police { border-color: #3b82f6; color: #60a5fa; }
         .pin-demo { border-color: #f97316; color: #fb923c; }
         .pin-rat { border-color: #a855f7; color: #c084fc; }
@@ -131,7 +137,7 @@
                     <div class="text-slate-300 text-xs mb-4 font-bold leading-relaxed">Legal protection for renters. Break your lease safely.</div>
                     
                     <div class="bg-slate-800 rounded p-2 mb-4 w-full border border-slate-700">
-                        <div class="text-emerald-400 text-xs font-black">98%</div>
+                       I <div class="text-emerald-400 text-xs font-black">98%</div>
                         <div class="text-[9px] text-slate-400 uppercase tracking-widest font-bold mt-0.5">Success Rate</div>
                     </div>
 
@@ -736,7 +742,12 @@
 
             const createMarker = (key, iconClass, emoji, popupText, colorHex) => {
                 const marker = L.marker(coords[key], {
-                    icon: L.divIcon({ className: `custom-pin ${iconClass}`, html: emoji, iconSize: [32, 32] }), 
+                    icon: L.divIcon({
+                        className: `custom-pin ${iconClass}`,
+                        html: emoji,
+                        iconSize: [32, 32],
+                        iconAnchor: [16, 16],
+                    }),
                     zIndexOffset: 1500
                 }).addTo(leafletMap);
                 
@@ -765,7 +776,12 @@
 
             // FIXED: Added colorHex and labelText parameters to function signature
             function spawnSwarm(iconClass, emoji, count, spread, labelText, colorHex) {
-                const icon = L.divIcon({ className: `custom-pin ${iconClass} pin-mini`, html: emoji });
+                const icon = L.divIcon({
+                    className: `custom-pin ${iconClass} pin-mini`,
+                    html: emoji,
+                    iconSize: [22, 22],
+                    iconAnchor: [11, 11],
+                });
                 for(let i=0; i<count; i++) {
                     let rLat = coords.target[0] + (Math.random() - 0.5) * spread;
                     let rLng = coords.target[1] + (Math.random() - 0.5) * spread * 1.5; 

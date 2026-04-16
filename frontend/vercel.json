@@ -5,10 +5,10 @@
   "installCommand": "npm install",
   "functions": {
     "app/api/scan/route.ts": {
-      "maxDuration": 60
+      "maxDuration": 120
     },
     "app/api/pdf/route.ts": {
-      "maxDuration": 60
+      "maxDuration": 120
     }
   }
 }
