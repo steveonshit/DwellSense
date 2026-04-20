@@ -102,4 +102,8 @@ async def scan(request: ScanRequest):
         threat_cards=threat_cards,
         map_data=map_data,
         gemini_configured=bool(ai_result.get("gemini_configured", False)),
+        gemini_status=ai_result.get("gemini_status"),
+        gemini_latency_ms=ai_result.get("gemini_latency_ms"),
+        gemini_timeout_seconds=ai_result.get("gemini_timeout_seconds"),
+        gemini_error_kind=ai_result.get("gemini_error_kind"),
     )

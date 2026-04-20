@@ -155,6 +155,7 @@ Populate via **`python -m jobs.daily_refresh`** (local) or the scheduled job in 
 - **Parsing:** Response text is read safely (including when `.text` is empty); JSON tolerates markdown fences; one retry on non-timeout failures.
 - **Fallback bullets:** If the key is missing → template bullets with a third line mentioning **`GEMINI_API_KEY`**. If the key exists but Gemini errors or times out → template third line says **AI summary unavailable**; counts/map still valid.
 - **Cache:** In-memory cache keyed by address hash + crime / 311 / permit / **eviction** counts (`ai_analysis.py`).
+- **Debug flag:** API responses include `gemini_configured` (boolean) so you can confirm, per scan, whether the backend loaded a non-placeholder `GEMINI_API_KEY`. Check **Browser DevTools → Network → `/api/scan` → Response**.
 
 ---
 
@@ -193,6 +194,7 @@ Below is a concise log of problems faced while connecting GitHub, Railway, Verce
 - **Deployment blocked / GitHub identity:** Private email or committer mismatch; resolved via **CLI deploy** (`npx vercel --prod`) and/or linking accounts.
 - **Path `frontend/frontend` error:** Vercel project had **Root Directory = `frontend`** while CLI ran from inside `frontend/` — doubled path. Fix: deploy from repo root with correct settings, or **new project** from `frontend/` without conflicting root.
 - **`BACKEND_URL` / `NEXT_PUBLIC_MAPBOX_TOKEN`:** Must be set in **Vercel → Project → Environment Variables** for Production (and Preview as needed).
+- **Redeploy vs new code:** Clicking **Redeploy** only rebuilds whatever source Vercel is currently connected to; it does **not** upload local changes from your laptop. If your Vercel project is using **CLI deploys** (`npx vercel --prod`), you must run the CLI again to ship changes. If you want push-to-deploy, connect the Git repo and ensure **Root Directory = `frontend`**.
 
 ### Backend behavior (production debugging)
 
@@ -202,7 +204,7 @@ Below is a concise log of problems faced while connecting GitHub, Railway, Verce
 
 ### Frontend map UX
 
-- **Pins jumping to top-left on hover:** CSS `transform: scale()` without `transform-origin` on custom Mapbox marker elements. **Fix:** `transform-origin: center center` on swarm and logistics marker elements in `MapComponent.tsx`.
+- **Pins jumping to top-left on hover:** Mapbox Marker sets `style.transform` on the marker element for positioning. If hover handlers also set `transform: scale(...)` on that same element, it overwrites Mapbox’s positioning transform and the pin snaps to a corner. **Fix:** use an **outer wrapper** element for Mapbox positioning and apply hover scaling to an **inner** element in `frontend/components/MapComponent.tsx`. (Also avoid putting the map inside an animated `transform` subtree; prefer opacity-only for global “fade-in”.)
 
 ---
 

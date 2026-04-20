@@ -73,3 +73,10 @@ class ScanResponse(BaseModel):
     map_data: MapData
     # True when backend loaded a non-placeholder GEMINI_API_KEY for this scan (see /scan JSON in DevTools).
     gemini_configured: bool = False
+    # Gemini call outcome — always present so callers can diagnose fallback reasons without reading logs.
+    # gemini_status: "no_key" | "placeholder" | "timeout" | "error" | "ok"
+    gemini_status: str | None = None
+    gemini_latency_ms: int | None = None
+    gemini_timeout_seconds: float | None = None
+    # gemini_error_kind: "empty" | "json_parse" | "auth" | "quota" | "unknown" (set only on status="error")
+    gemini_error_kind: str | None = None

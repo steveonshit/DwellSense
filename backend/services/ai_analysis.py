@@ -6,6 +6,7 @@ titles) and danger score come from Python (services.threat_card_layout).
 import os
 import re
 import json
+import time
 import asyncio
 import hashlib
 import logging
@@ -273,11 +274,20 @@ async def analyze(
 
     raw_gemini_env = (os.getenv("GEMINI_API_KEY") or "").strip()
     gemini_api_key = _effective_gemini_key(raw_gemini_env)
-    if raw_gemini_env and not gemini_api_key:
-        logger.warning(
-            "GEMINI_API_KEY is set but looks like a placeholder or template; Gemini is disabled. "
-            "Use a real key from Google AI Studio on the backend (Railway), not the frontend."
-        )
+
+    # Determine pre-call status for no-key / placeholder cases
+    if not gemini_api_key:
+        if raw_gemini_env:
+            _pre_status = "placeholder"
+            logger.warning(
+                "GEMINI_API_KEY is set but looks like a placeholder or template; Gemini is disabled. "
+                "Use a real key from Google AI Studio on the backend (Railway), not the frontend."
+            )
+        else:
+            _pre_status = "no_key"
+    else:
+        _pre_status = None  # will be set after the Gemini call
+
     key_fp = hashlib.md5(gemini_api_key.encode()).hexdigest()[:12] if gemini_api_key else "none"
     cache_key = hashlib.md5(
         f"{address}:{crime_count}:{reports_count}:{permit_count}:{eviction_count}:{key_fp}".encode()
@@ -285,7 +295,10 @@ async def analyze(
     if cache_key in _analysis_cache:
         hit = _analysis_cache[cache_key]
         if "gemini_configured" not in hit:
-            return {**hit, "gemini_configured": bool(gemini_api_key)}
+            hit = {**hit, "gemini_configured": bool(gemini_api_key)}
+        if "gemini_status" not in hit:
+            hit = {**hit, "gemini_status": None, "gemini_latency_ms": None,
+                   "gemini_timeout_seconds": _GEMINI_TIMEOUT, "gemini_error_kind": None}
         return hit
 
     risk = compute_risk_from_counts(crime_count, reports_count, permit_count, eviction_count)
@@ -298,6 +311,10 @@ async def analyze(
             **risk,
             "threat_cards": cards_from_specs_and_bullets(fb),
             "gemini_configured": False,
+            "gemini_status": _pre_status,
+            "gemini_latency_ms": None,
+            "gemini_timeout_seconds": _GEMINI_TIMEOUT,
+            "gemini_error_kind": None,
         }
         _analysis_cache[cache_key] = result
         return result
@@ -366,26 +383,50 @@ Write the 27 bullets (three per threat theme) based on this real data. Do not in
             gemini_map[cid] = row if isinstance(row, list) else []
         return _merge_bullets_with_fallback(template_fb, gemini_map)
 
+    def _classify_error(e: Exception) -> str:
+        msg = str(e).lower()
+        if "empty" in msg or "blocked" in msg or "no candidates" in msg:
+            return "empty"
+        if "json" in msg or "parse" in msg or "could not parse" in msg:
+            return "json_parse"
+        if "auth" in msg or "api key" in msg or "invalid api" in msg or "403" in msg:
+            return "auth"
+        if "quota" in msg or "rate limit" in msg or "429" in msg or "resource exhausted" in msg:
+            return "quota"
+        return "unknown"
+
     for attempt in range(2):
+        t0 = time.monotonic()
         try:
             bullets_by_id = await _call_gemini_bullets()
+            latency_ms = int((time.monotonic() - t0) * 1000)
             result = {
                 **risk,
                 "threat_cards": cards_from_specs_and_bullets(bullets_by_id),
                 "gemini_configured": True,
+                "gemini_status": "ok",
+                "gemini_latency_ms": latency_ms,
+                "gemini_timeout_seconds": _GEMINI_TIMEOUT,
+                "gemini_error_kind": None,
             }
             _analysis_cache[cache_key] = result
             return result
         except asyncio.TimeoutError:
+            latency_ms = int((time.monotonic() - t0) * 1000)
             logger.error(
-                "Gemini timed out after %.1fs — using fallback bullets. Increase GEMINI_TIMEOUT_SECONDS if needed.",
+                "Gemini timed out after %.1fs (measured %.0fms) — using fallback bullets. "
+                "Increase GEMINI_TIMEOUT_SECONDS if needed.",
                 _GEMINI_TIMEOUT,
+                latency_ms,
             )
-            fb = template_fb
             result = {
                 **risk,
-                "threat_cards": cards_from_specs_and_bullets(fb),
+                "threat_cards": cards_from_specs_and_bullets(template_fb),
                 "gemini_configured": True,
+                "gemini_status": "timeout",
+                "gemini_latency_ms": latency_ms,
+                "gemini_timeout_seconds": _GEMINI_TIMEOUT,
+                "gemini_error_kind": None,
             }
             _analysis_cache[cache_key] = result
             return result
@@ -394,12 +435,21 @@ Write the 27 bullets (three per threat theme) based on this real data. Do not in
                 logger.warning("Gemini attempt 1 failed (%s), retrying once…", e)
                 await asyncio.sleep(1.5)
                 continue
-            logger.exception("Gemini failed after retry — using fallback bullets")
-            fb = template_fb
+            latency_ms = int((time.monotonic() - t0) * 1000)
+            error_kind = _classify_error(e)
+            logger.exception(
+                "Gemini failed after retry (kind=%s, %.0fms) — using fallback bullets",
+                error_kind,
+                latency_ms,
+            )
             result = {
                 **risk,
-                "threat_cards": cards_from_specs_and_bullets(fb),
+                "threat_cards": cards_from_specs_and_bullets(template_fb),
                 "gemini_configured": True,
+                "gemini_status": "error",
+                "gemini_latency_ms": latency_ms,
+                "gemini_timeout_seconds": _GEMINI_TIMEOUT,
+                "gemini_error_kind": error_kind,
             }
             _analysis_cache[cache_key] = result
             return result
