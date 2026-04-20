@@ -155,7 +155,7 @@ Populate via **`python -m jobs.daily_refresh`** (local) or the scheduled job in 
 - **Parsing:** Response text is read safely (including when `.text` is empty); JSON tolerates markdown fences; one retry on non-timeout failures.
 - **Fallback bullets:** If the key is missing → template bullets with a third line mentioning **`GEMINI_API_KEY`**. If the key exists but Gemini errors or times out → template third line says **AI summary unavailable**; counts/map still valid.
 - **Cache:** In-memory cache keyed by address hash + crime / 311 / permit / **eviction** counts (`ai_analysis.py`).
-- **Debug flag:** API responses include `gemini_configured` (boolean) so you can confirm, per scan, whether the backend loaded a non-placeholder `GEMINI_API_KEY`. Check **Browser DevTools → Network → `/api/scan` → Response**.
+- **Debug fields:** API responses include `gemini_configured` plus `gemini_status`, `gemini_latency_ms`, `gemini_timeout_seconds`, and (on failures) `gemini_error_kind` + `gemini_error_detail` so you can distinguish **missing key vs timeout vs API errors** without reading Railway logs. Check **Browser DevTools → Network → `/api/scan` → Response**.
 
 ---
 

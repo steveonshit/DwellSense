@@ -80,3 +80,5 @@ class ScanResponse(BaseModel):
     gemini_timeout_seconds: float | None = None
     # gemini_error_kind: "empty" | "json_parse" | "auth" | "quota" | "unknown" (set only on status="error")
     gemini_error_kind: str | None = None
+    # Short, sanitized summary of the underlying exception (set only on status="error")
+    gemini_error_detail: str | None = None

@@ -106,4 +106,5 @@ async def scan(request: ScanRequest):
         gemini_latency_ms=ai_result.get("gemini_latency_ms"),
         gemini_timeout_seconds=ai_result.get("gemini_timeout_seconds"),
         gemini_error_kind=ai_result.get("gemini_error_kind"),
+        gemini_error_detail=ai_result.get("gemini_error_detail"),
     )

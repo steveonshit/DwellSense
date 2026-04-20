@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import logging
 import google.generativeai as genai
+from google.api_core import exceptions as google_exceptions
 from models.schemas import Coordinate, FlightPath, LogisticsCard
 from services.threat_card_layout import (
     cards_from_specs_and_bullets,
@@ -43,6 +44,83 @@ def _effective_gemini_key(raw: str | None = None) -> str:
     if s.startswith("<") and s.endswith(">"):
         return ""
     return s
+
+
+def _sanitize_error_detail(text: str, max_len: int = 240) -> str:
+    """
+    Return a short, user-safe error snippet for JSON responses.
+    Never echo API keys (defense-in-depth; keys shouldn't appear in exceptions anyway).
+    """
+    s = re.sub(r"\s+", " ", (text or "").strip())
+    if not s:
+        return ""
+    # Redact common secret-ish patterns if they ever leak through upstream errors.
+    s = re.sub(r"(?i)(api[_-]?key|token)\s*[:=]\s*\S+", r"\1=<redacted>", s)
+    return s[:max_len]
+
+
+def _classify_gemini_error(e: Exception) -> tuple[str, str]:
+    """
+    Map exceptions to (kind, detail) where kind is a coarse category for clients.
+    detail is sanitized and safe to return in JSON.
+    """
+    detail = _sanitize_error_detail(str(e))
+
+    # google.api_core.GoogleAPICallError has structured fields
+    if isinstance(e, google_exceptions.GoogleAPICallError):
+        code = getattr(e, "grpc_status_code", None) or getattr(e, "code", None)
+        reason = getattr(e, "reason", None) or ""
+        msg = f"{reason} {detail}".strip().lower()
+
+        if isinstance(e, google_exceptions.NotFound) or "not found" in msg or "was not found" in msg or "404" in msg:
+            return "not_found", _sanitize_error_detail(f"{reason} {detail}".strip())
+        if isinstance(e, google_exceptions.PermissionDenied) or "permission denied" in msg or "403" in msg:
+            return "auth", _sanitize_error_detail(f"{reason} {detail}".strip())
+        if isinstance(e, google_exceptions.ResourceExhausted) or "resource exhausted" in msg or "429" in msg:
+            return "quota", _sanitize_error_detail(f"{reason} {detail}".strip())
+        if isinstance(e, google_exceptions.InvalidArgument) or "invalid argument" in msg or "400" in msg:
+            return "bad_request", _sanitize_error_detail(f"{reason} {detail}".strip())
+        if isinstance(e, google_exceptions.Unauthenticated) or "unauthenticated" in msg or "401" in msg:
+            return "auth", _sanitize_error_detail(f"{reason} {detail}".strip())
+        if isinstance(e, google_exceptions.ServiceUnavailable) or "503" in msg or "unavailable" in msg:
+            return "unavailable", _sanitize_error_detail(f"{reason} {detail}".strip())
+        if isinstance(e, google_exceptions.DeadlineExceeded) or "deadline exceeded" in msg:
+            return "deadline", _sanitize_error_detail(f"{reason} {detail}".strip())
+
+        if code is not None:
+            return "api_error", _sanitize_error_detail(f"{type(e).__name__} code={code} {detail}".strip())
+
+        return "api_error", _sanitize_error_detail(f"{type(e).__name__} {detail}".strip())
+
+    # Non-Google errors / wrapped errors
+    msg = detail.lower()
+    if isinstance(e, json.JSONDecodeError) or "jsondecodeerror" in type(e).__name__.lower():
+        return "json_parse", _sanitize_error_detail(str(e))
+    if "could not parse json" in msg or "could not parse" in msg:
+        return "json_parse", detail
+    if "empty gemini response" in msg or "blocked" in msg or "no candidates" in msg:
+        return "empty", detail
+    if "deadline exceeded" in msg:
+        return "deadline", detail
+    if "ssl" in msg or "certificate" in msg:
+        return "tls", detail
+    if "timed out" in msg or "timeout" in msg:
+        # Should normally be asyncio.TimeoutError, but keep a fallback for library wording
+        return "timeout", detail
+    if "not found" in msg or "was not found" in msg or "404" in msg:
+        return "not_found", detail
+    if "permission denied" in msg or "403" in msg or "invalid api key" in msg or "api key not valid" in msg:
+        return "auth", detail
+    if "429" in msg or "resource exhausted" in msg or "quota" in msg or "rate limit" in msg:
+        return "quota", detail
+    if "401" in msg or "unauthenticated" in msg:
+        return "auth", detail
+    if "400" in msg or "invalid argument" in msg:
+        return "bad_request", detail
+    if "503" in msg or "service unavailable" in msg:
+        return "unavailable", detail
+
+    return "unknown", detail
 
 # Simple in-memory cache: address hash → analysis result
 _analysis_cache: dict[str, dict] = {}
@@ -296,9 +374,15 @@ async def analyze(
         hit = _analysis_cache[cache_key]
         if "gemini_configured" not in hit:
             hit = {**hit, "gemini_configured": bool(gemini_api_key)}
-        if "gemini_status" not in hit:
-            hit = {**hit, "gemini_status": None, "gemini_latency_ms": None,
-                   "gemini_timeout_seconds": _GEMINI_TIMEOUT, "gemini_error_kind": None}
+        if "gemini_status" not in hit or "gemini_error_detail" not in hit:
+            hit = {
+                **hit,
+                "gemini_status": None,
+                "gemini_latency_ms": None,
+                "gemini_timeout_seconds": _GEMINI_TIMEOUT,
+                "gemini_error_kind": None,
+                "gemini_error_detail": None,
+            }
         return hit
 
     risk = compute_risk_from_counts(crime_count, reports_count, permit_count, eviction_count)
@@ -315,6 +399,7 @@ async def analyze(
             "gemini_latency_ms": None,
             "gemini_timeout_seconds": _GEMINI_TIMEOUT,
             "gemini_error_kind": None,
+            "gemini_error_detail": None,
         }
         _analysis_cache[cache_key] = result
         return result
@@ -383,18 +468,6 @@ Write the 27 bullets (three per threat theme) based on this real data. Do not in
             gemini_map[cid] = row if isinstance(row, list) else []
         return _merge_bullets_with_fallback(template_fb, gemini_map)
 
-    def _classify_error(e: Exception) -> str:
-        msg = str(e).lower()
-        if "empty" in msg or "blocked" in msg or "no candidates" in msg:
-            return "empty"
-        if "json" in msg or "parse" in msg or "could not parse" in msg:
-            return "json_parse"
-        if "auth" in msg or "api key" in msg or "invalid api" in msg or "403" in msg:
-            return "auth"
-        if "quota" in msg or "rate limit" in msg or "429" in msg or "resource exhausted" in msg:
-            return "quota"
-        return "unknown"
-
     for attempt in range(2):
         t0 = time.monotonic()
         try:
@@ -408,6 +481,7 @@ Write the 27 bullets (three per threat theme) based on this real data. Do not in
                 "gemini_latency_ms": latency_ms,
                 "gemini_timeout_seconds": _GEMINI_TIMEOUT,
                 "gemini_error_kind": None,
+                "gemini_error_detail": None,
             }
             _analysis_cache[cache_key] = result
             return result
@@ -427,6 +501,7 @@ Write the 27 bullets (three per threat theme) based on this real data. Do not in
                 "gemini_latency_ms": latency_ms,
                 "gemini_timeout_seconds": _GEMINI_TIMEOUT,
                 "gemini_error_kind": None,
+                "gemini_error_detail": None,
             }
             _analysis_cache[cache_key] = result
             return result
@@ -436,7 +511,7 @@ Write the 27 bullets (three per threat theme) based on this real data. Do not in
                 await asyncio.sleep(1.5)
                 continue
             latency_ms = int((time.monotonic() - t0) * 1000)
-            error_kind = _classify_error(e)
+            error_kind, error_detail = _classify_gemini_error(e)
             logger.exception(
                 "Gemini failed after retry (kind=%s, %.0fms) — using fallback bullets",
                 error_kind,
@@ -450,6 +525,7 @@ Write the 27 bullets (three per threat theme) based on this real data. Do not in
                 "gemini_latency_ms": latency_ms,
                 "gemini_timeout_seconds": _GEMINI_TIMEOUT,
                 "gemini_error_kind": error_kind,
+                "gemini_error_detail": error_detail or None,
             }
             _analysis_cache[cache_key] = result
             return result
