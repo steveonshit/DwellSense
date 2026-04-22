@@ -39,7 +39,7 @@ DwellSense/
 | Frontend | Next.js 15, React 18, Tailwind CSS, Mapbox GL JS |
 | Backend | Python 3.12, FastAPI, Uvicorn, APScheduler |
 | Database | Supabase (Postgres) |
-| AI | Google Gemini (`gemini-2.0-flash`) for **bullets only**; card chrome + score in Python |
+| AI | Google Gemini (`gemini-2.5-flash` by default) for **bullets only**; card chrome + score in Python |
 | Maps / geo | Mapbox (geocoding + map), Google Places API (New), Distance Matrix (if used) |
 | Hosting | **Vercel** (frontend), **Railway** (backend) |
 
@@ -150,7 +150,7 @@ Populate via **`python -m jobs.daily_refresh`** (local) or the scheduled job in 
 
 **Gemini call details:**
 
-- **Model:** `gemini-2.0-flash` with system instruction `BULLETS_SYSTEM_PROMPT`; **`response_mime_type: application/json`**.
+- **Model:** `GEMINI_MODEL` env var (default `gemini-2.5-flash`) with system instruction `BULLETS_SYSTEM_PROMPT`; **`response_mime_type: application/json`**.
 - **Timeout:** `GEMINI_TIMEOUT_SECONDS` (default 90) wrapping `asyncio.to_thread(model.generate_content, ...)`.
 - **Parsing:** Response text is read safely (including when `.text` is empty); JSON tolerates markdown fences; one retry on non-timeout failures.
 - **Fallback bullets:** If the key is missing → template bullets with a third line mentioning **`GEMINI_API_KEY`**. If the key exists but Gemini errors or times out → template third line says **AI summary unavailable**; counts/map still valid.

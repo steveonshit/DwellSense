@@ -404,9 +404,10 @@ async def analyze(
         _analysis_cache[cache_key] = result
         return result
 
+    gemini_model_name = (os.getenv("GEMINI_MODEL") or "gemini-2.5-flash").strip()
     genai.configure(api_key=gemini_api_key)
     model = genai.GenerativeModel(
-        model_name="gemini-2.0-flash",
+        model_name=gemini_model_name,
         system_instruction=BULLETS_SYSTEM_PROMPT,
         generation_config=genai.GenerationConfig(
             temperature=0.35,
