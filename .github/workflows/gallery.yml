@@ -3,7 +3,7 @@ name: Deploy Gallery to GitHub Pages
 on:
   push:
     branches: [main]
-    paths: [gallery.html]
+    paths: [gallery.html, 'screenshots/**']
   workflow_dispatch:
 
 permissions:
@@ -28,6 +28,7 @@ jobs:
         run: |
           mkdir _site
           cp gallery.html _site/index.html
+          cp -r screenshots _site/screenshots
 
       - uses: actions/configure-pages@v5
 
