@@ -154,45 +154,49 @@ You must include all nine keys exactly as shown. Each value must be an array of 
 
 def _summarize_crime(data: list[dict]) -> str:
     if not data:
-        return "No crime data available in database (run daily refresh job)."
+        return "count=0"
     types: dict[str, int] = {}
     for row in data:
         t = row.get("crime_type", "Unknown")
         types[t] = types.get(t, 0) + 1
-    top = sorted(types.items(), key=lambda x: x[1], reverse=True)[:5]
-    lines = [f"- {t}: {c} incidents" for t, c in top]
-    return f"Total: {len(data)} incidents in last 30 days.\n" + "\n".join(lines)
+    top = sorted(types.items(), key=lambda x: x[1], reverse=True)[:3]
+    top_text = "; ".join([f"{t}:{c}" for t, c in top]) if top else ""
+    return f"count={len(data)}; top={top_text}"
 
 
 def _summarize_311(data: list[dict]) -> str:
     if not data:
-        return "No 311 data available in database (run daily refresh job)."
+        return "count=0"
     types: dict[str, int] = {}
     for row in data:
         t = row.get("complaint_type", "Unknown")
         types[t] = types.get(t, 0) + 1
-    top = sorted(types.items(), key=lambda x: x[1], reverse=True)[:5]
-    lines = [f"- {t}: {c} reports" for t, c in top]
-    return f"Total: {len(data)} reports in last 30 days.\n" + "\n".join(lines)
+    top = sorted(types.items(), key=lambda x: x[1], reverse=True)[:3]
+    top_text = "; ".join([f"{t}:{c}" for t, c in top]) if top else ""
+    return f"count={len(data)}; top={top_text}"
 
 
 def _summarize_permits(data: list[dict]) -> str:
     if not data:
-        return "No permit data available in database (run daily refresh job)."
+        return "active_count=0"
     active = [r for r in data if r.get("permit_status", "").lower() in ("issued", "active", "renewed")]
     types: dict[str, int] = {}
     for row in active:
         t = row.get("permit_type", "Unknown")
         types[t] = types.get(t, 0) + 1
-    lines = [f"- {t}: {c} active permits" for t, c in sorted(types.items(), key=lambda x: x[1], reverse=True)]
-    return f"Total active: {len(active)} permits.\n" + "\n".join(lines)
+    top = sorted(types.items(), key=lambda x: x[1], reverse=True)[:3]
+    top_text = "; ".join([f"{t}:{c}" for t, c in top]) if top else ""
+    return f"active_count={len(active)}; top={top_text}"
 
 
 def _summarize_logistics(logistics: list[LogisticsCard]) -> str:
-    lines = []
-    for card in logistics:
-        lines.append(f"- {card.category} ({card.emoji} {card.name}): {card.distance_value} {card.distance_unit}")
-    return "\n".join(lines) if lines else "No logistics data."
+    if not logistics:
+        return "none"
+    # Keep it short: only the first few cards (already sorted by importance in places.py)
+    parts = []
+    for card in logistics[:4]:
+        parts.append(f"{card.category}:{card.distance_value}{card.distance_unit}")
+    return "; ".join(parts)
 
 
 def _extract_text_from_response(response) -> str:
@@ -411,6 +415,7 @@ async def analyze(
         system_instruction=BULLETS_SYSTEM_PROMPT,
         generation_config=genai.GenerationConfig(
             temperature=0.35,
+            max_output_tokens=650,
             response_mime_type="application/json",
         ),
     )
@@ -421,28 +426,18 @@ async def analyze(
         else "No major flight corridor detected near this address."
     )
 
-    prompt = f"""ADDRESS: {address}
-COORDINATES: {coord.lat:.5f}, {coord.lng:.5f}
-
-CRIME DATA (last 30 days, within 0.5 miles):
-{_summarize_crime(crime)}
-
-311 SERVICE REQUESTS (last 30 days, within 0.5 miles):
-{_summarize_311(reports_311)}
-
-BUILDING PERMITS (last 90 days, within 0.5 miles):
-{_summarize_permits(permits)}
-
-EVICTION RECORDS (nearby, all time):
-{eviction_count} eviction filings found near this address.
-
-TRANSIT & GROCERY LOGISTICS:
-{_summarize_logistics(logistics)}
-
-FLIGHT PATH ANALYSIS:
-{flight_text}
-
-Write the 27 bullets (three per threat theme) based on this real data. Do not invent statistics beyond what is implied above."""
+    prompt = (
+        "ADDRESS: " + address + "\n"
+        f"COORD: {coord.lat:.5f},{coord.lng:.5f}\n"
+        f"CRIME_30D_0.5MI: {_summarize_crime(crime)}\n"
+        f"SR311_30D_0.5MI: {_summarize_311(reports_311)}\n"
+        f"PERMITS_90D_0.5MI: {_summarize_permits(permits)}\n"
+        f"EVICTIONS_NEARBY: count={eviction_count}\n"
+        f"LOGISTICS: {_summarize_logistics(logistics)}\n"
+        f"FLIGHT: {flight_text}\n"
+        "\n"
+        "Return the 27 bullets JSON only. Use the numbers above; don't invent new stats."
+    )
 
     template_fb = _fallback_bullets_by_id(
         crime_count, reports_count, permit_count, eviction_count, _third_bullet_ai_failed()
