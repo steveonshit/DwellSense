@@ -21,8 +21,9 @@ from services.threat_card_layout import (
 
 logger = logging.getLogger(__name__)
 
-# Allow override via env (Railway / local). Smaller Gemini output should finish faster than before.
+# Allow override via env (Railway / local).
 _GEMINI_TIMEOUT = float(os.getenv("GEMINI_TIMEOUT_SECONDS", "90"))
+_GEMINI_MAX_OUTPUT_TOKENS = int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "2048"))
 
 _PLACEHOLDER_GEMINI_KEYS = frozenset(
     {
@@ -97,6 +98,8 @@ def _classify_gemini_error(e: Exception) -> tuple[str, str]:
     if isinstance(e, json.JSONDecodeError) or "jsondecodeerror" in type(e).__name__.lower():
         return "json_parse", _sanitize_error_detail(str(e))
     if "could not parse json" in msg or "could not parse" in msg:
+        if "truncat" in msg or "unterminated" in msg or "unexpected end" in msg:
+            return "truncated_output", detail
         return "json_parse", detail
     if "empty gemini response" in msg or "blocked" in msg or "no candidates" in msg:
         return "empty", detail
@@ -415,7 +418,7 @@ async def analyze(
         system_instruction=BULLETS_SYSTEM_PROMPT,
         generation_config=genai.GenerationConfig(
             temperature=0.35,
-            max_output_tokens=650,
+            max_output_tokens=_GEMINI_MAX_OUTPUT_TOKENS,
             response_mime_type="application/json",
         ),
     )

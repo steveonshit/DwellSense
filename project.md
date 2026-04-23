@@ -151,6 +151,7 @@ Populate via **`python -m jobs.daily_refresh`** (local) or the scheduled job in 
 **Gemini call details:**
 
 - **Model:** `GEMINI_MODEL` env var (default `gemini-2.5-flash`) with system instruction `BULLETS_SYSTEM_PROMPT`; **`response_mime_type: application/json`**.
+- **Max output tokens:** `GEMINI_MAX_OUTPUT_TOKENS` (default **2048**) — the bullets JSON is larger than it looks; too-small values truncate JSON and cause parse failures.
 - **Timeout:** `GEMINI_TIMEOUT_SECONDS` (default 90) wrapping `asyncio.to_thread(model.generate_content, ...)`.
 - **Parsing:** Response text is read safely (including when `.text` is empty); JSON tolerates markdown fences; one retry on non-timeout failures.
 - **Fallback bullets:** If the key is missing → template bullets with a third line mentioning **`GEMINI_API_KEY`**. If the key exists but Gemini errors or times out → template third line says **AI summary unavailable**; counts/map still valid.
