@@ -49,13 +49,13 @@ DwellSense/
 
 1. User submits an address on **Vercel** (e.g. `dwellsense.vercel.app`).
 2. Browser calls **`POST /api/scan`** on the Next.js app (keeps `BACKEND_URL` server-side).
-3. Next.js proxies to **`POST {BACKEND_URL}/scan`** on Railway with a **~110s** upstream timeout; the route declares **`maxDuration = 120`** seconds.
+3. Next.js proxies to **`POST {BACKEND_URL}/scan`** on Railway with a **~290s** upstream timeout; the route declares **`maxDuration = 300`** seconds.
 4. Backend runs geocoding, parallel DB + Places calls, flight math, then **Gemini** (bullets only — often the slowest step).
 5. JSON response drives the UI (map, logistics carousel, threat cards).
 
 **Loading ad (UX):** `frontend/components/LoadingAd.tsx` runs a **5-second** countdown. The ad only completes when **both** the timer hits zero **and** the scan request has finished (`isApiReady`). If the scan takes longer than 5s, the user waits past the ad until data arrives. If they skip the ad early, they still wait until the API returns.
 
-**Client:** `frontend/app/page.tsx` uses `AbortSignal.timeout(115_000)` on the fetch to `/api/scan` so the UI does not hang forever.
+**Client:** `frontend/app/page.tsx` uses `AbortSignal.timeout(295_000)` on the fetch to `/api/scan` so the UI does not hang forever.
 
 **Health check:** `GET /health` on the backend returns `{"status":"ok","service":"DwellSense API"}`.
 
@@ -70,7 +70,7 @@ DwellSense/
 | `MAPBOX_TOKEN` | Geocoding |
 | `GOOGLE_MAPS_API_KEY` | Places API (New) — transit, grocery, Target, etc. **Must be a real key, not a placeholder.** |
 | `GEMINI_API_KEY` | AI threat analysis |
-| `GEMINI_TIMEOUT_SECONDS` | Optional. Seconds for `asyncio.wait_for` around Gemini (default **90**). See `backend/.env.example`. |
+| `GEMINI_TIMEOUT_SECONDS` | Optional. Seconds for `asyncio.wait_for` around Gemini (default **300**). Set **`0`** to disable the asyncio timeout guard. See `backend/.env.example`. |
 | `SUPABASE_URL` | Database URL |
 | `SUPABASE_SERVICE_KEY` | Service role key (not anon) |
 | `FRONTEND_URL` | CORS — set to your Vercel URL in production |
@@ -101,8 +101,8 @@ DwellSense/
 ### Vercel (frontend)
 
 - Project linked to **`frontend`** as root (or deploy from `frontend/` via CLI).
-- **`vercel.json`** sets **`maxDuration`: 120** seconds for `app/api/scan/route.ts` and `app/api/pdf/route.ts` so long scans (Gemini + Places) are not cut off by the default serverless limit.
-- **`frontend/app/api/scan/route.ts`** also exports `maxDuration = 120` and uses `AbortSignal.timeout(110_000)` on the fetch to the backend.
+- **`vercel.json`** sets **`maxDuration`: 300** seconds for `app/api/scan/route.ts` and `app/api/pdf/route.ts` so long scans (Gemini + Places) are not cut off by the default serverless limit.
+- **`frontend/app/api/scan/route.ts`** exports `maxDuration = 300` and uses `AbortSignal.timeout(290_000)` on the fetch to the backend.
 
 ---
 
@@ -152,7 +152,7 @@ Populate via **`python -m jobs.daily_refresh`** (local) or the scheduled job in 
 
 - **Model:** `GEMINI_MODEL` env var (default `gemini-2.5-flash`) with system instruction `BULLETS_SYSTEM_PROMPT`; **`response_mime_type: application/json`**.
 - **Max output tokens:** `GEMINI_MAX_OUTPUT_TOKENS` (default **2048**) — the bullets JSON is larger than it looks; too-small values truncate JSON and cause parse failures.
-- **Timeout:** `GEMINI_TIMEOUT_SECONDS` (default 90) wrapping `asyncio.to_thread(model.generate_content, ...)`.
+- **Timeout:** `GEMINI_TIMEOUT_SECONDS` (default **300**) wrapping `asyncio.to_thread(model.generate_content, ...)` when `> 0`. Set **`0`** to disable the `asyncio.wait_for` guard (still subject to upstream HTTP limits).
 - **Parsing:** Response text is read safely (including when `.text` is empty); JSON tolerates markdown fences; one retry on non-timeout failures.
 - **Fallback bullets:** If the key is missing → template bullets with a third line mentioning **`GEMINI_API_KEY`**. If the key exists but Gemini errors or times out → template third line says **AI summary unavailable**; counts/map still valid.
 - **Cache:** In-memory cache keyed by address hash + crime / 311 / permit / **eviction** counts (`ai_analysis.py`).

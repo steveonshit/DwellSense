@@ -22,7 +22,14 @@ from services.threat_card_layout import (
 logger = logging.getLogger(__name__)
 
 # Allow override via env (Railway / local).
-_GEMINI_TIMEOUT = float(os.getenv("GEMINI_TIMEOUT_SECONDS", "90"))
+# Default raised so Gemini can finish during end-to-end debugging.
+# Set GEMINI_TIMEOUT_SECONDS=0 (or negative) to disable the asyncio wait_for guard.
+_GEMINI_TIMEOUT_RAW = os.getenv("GEMINI_TIMEOUT_SECONDS", "300").strip()
+if not _GEMINI_TIMEOUT_RAW:
+    _GEMINI_TIMEOUT = 300.0
+else:
+    _GEMINI_TIMEOUT = float(_GEMINI_TIMEOUT_RAW)
+_GEMINI_TIMEOUT_REPORT: float | None = None if _GEMINI_TIMEOUT <= 0 else _GEMINI_TIMEOUT
 _GEMINI_MAX_OUTPUT_TOKENS = int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "2048"))
 
 _PLACEHOLDER_GEMINI_KEYS = frozenset(
@@ -386,7 +393,7 @@ async def analyze(
                 **hit,
                 "gemini_status": None,
                 "gemini_latency_ms": None,
-                "gemini_timeout_seconds": _GEMINI_TIMEOUT,
+                "gemini_timeout_seconds": _GEMINI_TIMEOUT_REPORT,
                 "gemini_error_kind": None,
                 "gemini_error_detail": None,
             }
@@ -404,7 +411,7 @@ async def analyze(
             "gemini_configured": False,
             "gemini_status": _pre_status,
             "gemini_latency_ms": None,
-            "gemini_timeout_seconds": _GEMINI_TIMEOUT,
+            "gemini_timeout_seconds": _GEMINI_TIMEOUT_REPORT,
             "gemini_error_kind": None,
             "gemini_error_detail": None,
         }
@@ -447,10 +454,13 @@ async def analyze(
     )
 
     async def _call_gemini_bullets() -> dict[str, list[str]]:
-        response = await asyncio.wait_for(
-            asyncio.to_thread(model.generate_content, prompt),
-            timeout=_GEMINI_TIMEOUT,
-        )
+        if _GEMINI_TIMEOUT > 0:
+            response = await asyncio.wait_for(
+                asyncio.to_thread(model.generate_content, prompt),
+                timeout=_GEMINI_TIMEOUT,
+            )
+        else:
+            response = await asyncio.to_thread(model.generate_content, prompt)
         raw = _extract_text_from_response(response)
         if not raw:
             fb = getattr(response, "prompt_feedback", None)
@@ -478,7 +488,7 @@ async def analyze(
                 "gemini_configured": True,
                 "gemini_status": "ok",
                 "gemini_latency_ms": latency_ms,
-                "gemini_timeout_seconds": _GEMINI_TIMEOUT,
+                "gemini_timeout_seconds": _GEMINI_TIMEOUT_REPORT,
                 "gemini_error_kind": None,
                 "gemini_error_detail": None,
             }
@@ -498,7 +508,7 @@ async def analyze(
                 "gemini_configured": True,
                 "gemini_status": "timeout",
                 "gemini_latency_ms": latency_ms,
-                "gemini_timeout_seconds": _GEMINI_TIMEOUT,
+                "gemini_timeout_seconds": _GEMINI_TIMEOUT_REPORT,
                 "gemini_error_kind": None,
                 "gemini_error_detail": None,
             }
@@ -522,7 +532,7 @@ async def analyze(
                 "gemini_configured": True,
                 "gemini_status": "error",
                 "gemini_latency_ms": latency_ms,
-                "gemini_timeout_seconds": _GEMINI_TIMEOUT,
+                "gemini_timeout_seconds": _GEMINI_TIMEOUT_REPORT,
                 "gemini_error_kind": error_kind,
                 "gemini_error_detail": error_detail or None,
             }
