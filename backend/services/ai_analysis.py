@@ -30,7 +30,7 @@ if not _GEMINI_TIMEOUT_RAW:
 else:
     _GEMINI_TIMEOUT = float(_GEMINI_TIMEOUT_RAW)
 _GEMINI_TIMEOUT_REPORT: float | None = None if _GEMINI_TIMEOUT <= 0 else _GEMINI_TIMEOUT
-_GEMINI_MAX_OUTPUT_TOKENS = int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "2048"))
+_GEMINI_MAX_OUTPUT_TOKENS = int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "4096"))
 
 _PLACEHOLDER_GEMINI_KEYS = frozenset(
     {
@@ -139,7 +139,9 @@ BULLETS_SYSTEM_PROMPT = """You are DwellSense, a brutally honest real estate for
 You receive a data brief about one NYC address. Write ONLY the nine threat-card bullet lists.
 
 Rules:
-- Each bullet is one short sentence. Use specific numbers from the brief when possible.
+- Each bullet must be short (max ~80 characters). One sentence.
+- Do not ramble. No hedging. No extra context outside the brief.
+- Use specific numbers from the brief when possible.
 - No markdown. No nested JSON inside strings.
 - TONE: Direct, data-driven, slightly adversarial. Bullets should feel like insider knowledge, not generic warnings.
 
