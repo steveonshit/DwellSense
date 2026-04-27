@@ -135,15 +135,16 @@ def _classify_gemini_error(e: Exception) -> tuple[str, str]:
 # Simple in-memory cache: address hash → analysis result
 _analysis_cache: dict[str, dict] = {}
 
-BULLETS_SYSTEM_PROMPT = """You are DwellSense, a brutally honest real estate forensics AI for renters.
+BULLETS_SYSTEM_PROMPT = """You are DwellSense, a renter-focused real estate forensics assistant.
 You receive a data brief about one NYC address. Write ONLY the nine threat-card bullet lists.
 
 Rules:
+- Write in plain English a renter can understand.
 - Each bullet must be short (max ~80 characters). One sentence.
-- Do not ramble. No hedging. No extra context outside the brief.
-- Use specific numbers from the brief when possible.
-- No markdown. No nested JSON inside strings.
-- TONE: Direct, data-driven, slightly adversarial. Bullets should feel like insider knowledge, not generic warnings.
+- Use the exact numbers in the brief when possible. Never invent stats.
+- If the brief indicates there are zero recent items for a card, the 3rd bullet must be:
+  "No recent reports!"
+- No markdown. No HTML. No nested JSON inside strings.
 
 Return ONLY valid JSON (no markdown fences, no extra text) in this exact shape:
 {
@@ -265,6 +266,43 @@ def _third_bullet_ai_failed() -> str:
     return "AI summary unavailable this scan; counts and map data above are still accurate."
 
 
+def _no_recent_reports_text() -> str:
+    return "No recent reports!"
+
+
+def _apply_no_recent_reports_bottom_line(
+    bullets_by_id: dict[str, list[str]],
+    *,
+    crime_count: int,
+    reports_count: int,
+    permit_count: int,
+    eviction_count: int,
+    flight_path: FlightPath | None,
+) -> dict[str, list[str]]:
+    """
+    The UI treats the 3rd bullet as the "bottom line".
+    If there is no recent data for a card, make that bottom line easy to read.
+    """
+    out = {k: v[:] for k, v in bullets_by_id.items()}
+
+    def _set(cid: str, has_data: bool) -> None:
+        if has_data:
+            return
+        row = out.get(cid) or ["", "", ""]
+        row = _normalize_three(row)
+        row[2] = _no_recent_reports_text()
+        out[cid] = row
+
+    _set("police_calls", crime_count > 0)
+    _set("area_safety", crime_count > 0)
+    _set("reports_311", reports_count > 0)
+    _set("noise_schedule", reports_count > 0)
+    _set("demolitions", permit_count > 0)
+    _set("high_churn", eviction_count > 0)
+    _set("flight_path", flight_path is not None)
+
+    return out
+
 def _normalize_three(row: list[str] | None) -> list[str]:
     if not row:
         return ["", "", ""]
@@ -282,21 +320,25 @@ def _fallback_bullets_by_id(
     bullet_extra: str,
 ) -> dict[str, list[str]]:
     """Template bullets when Gemini is off or a card fails validation."""
+    crime_bottom = _no_recent_reports_text() if crime_count == 0 else bullet_extra
+    reports_bottom = _no_recent_reports_text() if reports_count == 0 else bullet_extra
+    permits_bottom = _no_recent_reports_text() if permit_count == 0 else bullet_extra
+    evictions_bottom = _no_recent_reports_text() if eviction_count == 0 else bullet_extra
     return {
         "high_churn": [
             "Eviction records found nearby.",
             "High turnover signals problem landlords.",
-            bullet_extra,
+            evictions_bottom,
         ],
         "police_calls": [
             f"{crime_count} incidents logged in last 30 days.",
             "See blue zones on the threat map.",
-            bullet_extra,
+            crime_bottom,
         ],
         "area_safety": [
             "Crime data pulled from NYC Open Data.",
             "See red zones on the threat map.",
-            bullet_extra,
+            crime_bottom,
         ],
         "tenant_warnings": [
             "Check HPD building violations for this address.",
@@ -306,12 +348,12 @@ def _fallback_bullets_by_id(
         "demolitions": [
             f"{permit_count} active permits found nearby.",
             "Heavy equipment possible during business hours.",
-            bullet_extra,
+            permits_bottom,
         ],
         "noise_schedule": [
             "311 noise complaints logged nearby.",
             "Check for commercial loading docks on the block.",
-            bullet_extra,
+            reports_bottom,
         ],
         "flight_path": [
             "Flight corridor analysis computed.",
@@ -321,7 +363,7 @@ def _fallback_bullets_by_id(
         "reports_311": [
             f"{reports_count} 311 reports filed nearby.",
             "Primary complaints visible on map.",
-            bullet_extra,
+            reports_bottom,
         ],
         "oven_effect": [
             "West-facing units trap afternoon heat.",
@@ -407,6 +449,14 @@ async def analyze(
         fb = _fallback_bullets_by_id(
             crime_count, reports_count, permit_count, eviction_count, _third_bullet_no_key()
         )
+        fb = _apply_no_recent_reports_bottom_line(
+            fb,
+            crime_count=crime_count,
+            reports_count=reports_count,
+            permit_count=permit_count,
+            eviction_count=eviction_count,
+            flight_path=flight_path,
+        )
         result = {
             **risk,
             "threat_cards": cards_from_specs_and_bullets(fb),
@@ -454,6 +504,14 @@ async def analyze(
     template_fb = _fallback_bullets_by_id(
         crime_count, reports_count, permit_count, eviction_count, _third_bullet_ai_failed()
     )
+    template_fb = _apply_no_recent_reports_bottom_line(
+        template_fb,
+        crime_count=crime_count,
+        reports_count=reports_count,
+        permit_count=permit_count,
+        eviction_count=eviction_count,
+        flight_path=flight_path,
+    )
 
     async def _call_gemini_bullets() -> dict[str, list[str]]:
         if _GEMINI_TIMEOUT > 0:
@@ -477,7 +535,15 @@ async def analyze(
         for cid in ordered_card_ids():
             row = inner.get(cid)
             gemini_map[cid] = row if isinstance(row, list) else []
-        return _merge_bullets_with_fallback(template_fb, gemini_map)
+        merged = _merge_bullets_with_fallback(template_fb, gemini_map)
+        return _apply_no_recent_reports_bottom_line(
+            merged,
+            crime_count=crime_count,
+            reports_count=reports_count,
+            permit_count=permit_count,
+            eviction_count=eviction_count,
+            flight_path=flight_path,
+        )
 
     for attempt in range(2):
         t0 = time.monotonic()
