@@ -21,6 +21,10 @@ from services.threat_card_layout import (
 
 logger = logging.getLogger(__name__)
 
+# Bump this when bullet formatting / merge rules change so in-memory caches don't
+# serve stale card text across deploys.
+_ANALYSIS_CACHE_VERSION = "2026-04-27-threat-bullets-v1"
+
 # Allow override via env (Railway / local).
 # Default raised so Gemini can finish during end-to-end debugging.
 # Set GEMINI_TIMEOUT_SECONDS=0 (or negative) to disable the asyncio wait_for guard.
@@ -426,7 +430,7 @@ async def analyze(
 
     key_fp = hashlib.md5(gemini_api_key.encode()).hexdigest()[:12] if gemini_api_key else "none"
     cache_key = hashlib.md5(
-        f"{address}:{crime_count}:{reports_count}:{permit_count}:{eviction_count}:{key_fp}".encode()
+        f"{_ANALYSIS_CACHE_VERSION}:{address}:{crime_count}:{reports_count}:{permit_count}:{eviction_count}:{key_fp}".encode()
     ).hexdigest()
     if cache_key in _analysis_cache:
         hit = _analysis_cache[cache_key]
