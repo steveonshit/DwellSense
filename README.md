@@ -99,12 +99,19 @@ CREATE INDEX eviction_records_lat_lng ON eviction_records (lat, lng);
 
 ### Flight exposure — `adsb_samples` (optional)
 
-For **Flight Activity** exposure stats (`flight_exposure` on `/scan`), create the samples table and enable ingestion:
+For **Flight Activity** exposure stats (`flight_exposure` on `/scan`), create `public.adsb_samples` and enable ingestion.
 
-1. In Supabase **SQL Editor**, open and run **`backend/sql/adsb_samples.sql`** (creates `public.adsb_samples` + indexes).
-2. In production, set **`ADSB_INGEST_ENABLED=true`** on the backend (Railway). The API schedules OpenSky pulls every **`ADSB_INGEST_INTERVAL_SECONDS`** (default **120**). Use **`OPENSKY_USERNAME`** / **`OPENSKY_PASSWORD`** for better rate limits.
+**Recommended — GitHub Actions (no keys in chat):**
 
-For local-only testing you can still run **`python -m jobs.adsb_ingest`** in a terminal.
+1. In GitHub: **Settings → Secrets and variables → Actions**, add:
+   - **`SUPABASE_ACCESS_TOKEN`** — [Account → Access Tokens](https://supabase.com/dashboard/account/tokens)
+   - **`SUPABASE_PROJECT_REF`** — Project ID in the dashboard URL (`.../project/<ref>/...`)
+   - **`SUPABASE_DB_PASSWORD`** — **Project Settings → Database** (Postgres password)
+2. Push to **`main`** (or **Actions → Deploy Supabase migrations → Run workflow**). The workflow runs `supabase link` + `supabase db push` using `supabase/migrations/`.
+
+**Fallback — paste SQL once:** open **`backend/sql/adsb_samples.sql`** (same DDL as the migration) in Supabase **SQL Editor** and run.
+
+**Ingest samples:** set **`ADSB_INGEST_ENABLED=true`** on Railway (see `backend/.env.example`). Optionally **`OPENSKY_USERNAME`** / **`OPENSKY_PASSWORD`**. For local testing: **`python -m jobs.adsb_ingest`**.
 
 ---
 
@@ -206,6 +213,9 @@ Set `NEXT_PUBLIC_MAPBOX_TOKEN` and `BACKEND_URL` in Vercel's environment setting
 
 **Backend → Railway (paid, ~$5/mo):**
 Push the `backend/` folder to a GitHub repo, connect to Railway, set all env vars.
+
+**Supabase schema (migrations):**
+Add new SQL under **`supabase/migrations/`** and configure GitHub Action secrets **`SUPABASE_ACCESS_TOKEN`**, **`SUPABASE_PROJECT_REF`**, **`SUPABASE_DB_PASSWORD`** so **Deploy Supabase migrations** runs on pushes to `main` (see `.github/workflows/supabase-migrations.yml`).
 
 ---
 

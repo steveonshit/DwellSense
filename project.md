@@ -173,6 +173,7 @@ Rationale: illegal parking volume is not a meaningful renter safety / lease-qual
 
 - Remote: `https://github.com/steveonshit/DwellSense.git`
 - `.gitignore` excludes `backend/.env`, `backend/venv/`, `frontend/.env.local`, `frontend/node_modules/`, etc.
+- **Supabase migrations:** workflow **`.github/workflows/supabase-migrations.yml`** runs on pushes to `main` when `supabase/migrations/**` changes. Configure Action secrets **`SUPABASE_ACCESS_TOKEN`**, **`SUPABASE_PROJECT_REF`**, **`SUPABASE_DB_PASSWORD`** (see `README.md`). No database credentials belong in chat or committed files.
 
 ### Railway (backend)
 
@@ -203,7 +204,7 @@ Populate municipal tables via **`python -m jobs.daily_refresh`** (local) or the 
 
 For the “flight exposure score” prototype, we also added:
 
-- `adsb_samples` (created by `backend/sql/adsb_samples.sql`)
+- `adsb_samples` (DDL in **`supabase/migrations/`**; mirror copy in **`backend/sql/adsb_samples.sql`** for manual paste)
 
 This table stores ADS‑B position samples so we can compute **night vs day overflight rates**, **typical altitude**, and a **data quality** badge over time.
 
@@ -216,6 +217,7 @@ This table stores ADS‑B position samples so we can compute **night vs day over
 | Area | Path |
 |------|------|
 | Main app + schedulers | `backend/main.py` |
+| Supabase migrations (CI) | `supabase/migrations/`, `.github/workflows/supabase-migrations.yml` |
 | Main scan pipeline | `backend/routers/scan.py` |
 | Threat card layout + deterministic risk | `backend/services/threat_card_layout.py` |
 | Gemini (bullets only) + merge / fallback | `backend/services/ai_analysis.py` |
@@ -441,7 +443,8 @@ python main.py
 
 ### ADS‑B exposure prototype (local)
 
-1. Create `adsb_samples` table in Supabase: run `backend/sql/adsb_samples.sql` in the Supabase SQL editor.
+1. **Preferred:** configure GitHub Action secrets (see **README** / **`.github/workflows/supabase-migrations.yml`**) and run **Deploy Supabase migrations** or push to `main`.
+2. **Manual:** run `backend/sql/adsb_samples.sql` in the Supabase SQL editor (same DDL as `supabase/migrations/`).
 2. **Production ingest:** set **`ADSB_INGEST_ENABLED=true`** on Railway (same service as the API). Optionally tune **`ADSB_INGEST_INTERVAL_SECONDS`** (default 120).
 
 **Local manual loop (still supported):**
@@ -503,7 +506,7 @@ We have implemented and tested locally (Next.js dev + FastAPI):
 
 - have latest **`main`** deployed on Railway/Vercel
 - ensure Railway/Vercel env vars are set (`FLIGHT_MODE`, `ADSB_INGEST_*`, etc.)
-- apply `backend/sql/adsb_samples.sql` to the production Supabase (if using exposure)
+- configure GitHub Action secrets and let **Deploy Supabase migrations** apply `supabase/migrations/`, **or** paste `backend/sql/adsb_samples.sql` once in the Supabase SQL editor (if using exposure)
 - decide whether production should use `FLIGHT_MODE=static` or a paid ADS‑B provider + ingestion pipeline
 
 **Next decisions before prod:**
