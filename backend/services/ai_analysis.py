@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 # Bump this when bullet formatting / merge rules change so in-memory caches don't
 # serve stale card text across deploys.
-_ANALYSIS_CACHE_VERSION = "2026-04-27-threat-bullets-v1"
+_ANALYSIS_CACHE_VERSION = "2026-04-28-wellness-score-v2"
 
 # Allow override via env (Railway / local).
 # Default raised so Gemini can finish during end-to-end debugging.
@@ -204,6 +204,12 @@ def _summarize_permits(data: list[dict]) -> str:
     top = sorted(types.items(), key=lambda x: x[1], reverse=True)[:3]
     top_text = "; ".join([f"{t}:{c}" for t, c in top]) if top else ""
     return f"active_count={len(active)}; top={top_text}"
+
+
+def _count_active_permits(data: list[dict]) -> int:
+    if not data:
+        return 0
+    return sum(1 for r in data if (r.get("permit_status", "") or "").lower() in ("issued", "active", "renewed"))
 
 
 def _summarize_logistics(logistics: list[LogisticsCard]) -> str:
@@ -402,6 +408,11 @@ async def analyze(
     evictions: list[dict],
     logistics: list[LogisticsCard],
     flight_path: FlightPath | None,
+    *,
+    crime_capped: bool = False,
+    reports_capped: bool = False,
+    permits_capped: bool = False,
+    evictions_capped: bool = False,
 ) -> dict:
     """
     Python builds danger score + card chrome; Gemini writes bullets only.
@@ -409,7 +420,7 @@ async def analyze(
     """
     crime_count = len(crime)
     reports_count = len(reports_311)
-    permit_count = len(permits)
+    permit_count = _count_active_permits(permits)
     eviction_count = len(evictions)
 
     raw_gemini_env = (os.getenv("GEMINI_API_KEY") or "").strip()
@@ -430,7 +441,8 @@ async def analyze(
 
     key_fp = hashlib.md5(gemini_api_key.encode()).hexdigest()[:12] if gemini_api_key else "none"
     cache_key = hashlib.md5(
-        f"{_ANALYSIS_CACHE_VERSION}:{address}:{crime_count}:{reports_count}:{permit_count}:{eviction_count}:{key_fp}".encode()
+        f"{_ANALYSIS_CACHE_VERSION}:{address}:{crime_count}:{reports_count}:{permit_count}:{eviction_count}:"
+        f"c{int(crime_capped)}r{int(reports_capped)}p{int(permits_capped)}e{int(evictions_capped)}:{key_fp}".encode()
     ).hexdigest()
     if cache_key in _analysis_cache:
         hit = _analysis_cache[cache_key]
@@ -447,7 +459,16 @@ async def analyze(
             }
         return hit
 
-    risk = compute_risk_from_counts(crime_count, reports_count, permit_count, eviction_count)
+    risk = compute_risk_from_counts(
+        crime_count,
+        reports_count,
+        permit_count,
+        eviction_count,
+        crime_capped=crime_capped,
+        reports_capped=reports_capped,
+        permits_capped=permits_capped,
+        evictions_capped=evictions_capped,
+    )
 
     if not gemini_api_key:
         fb = _fallback_bullets_by_id(

@@ -54,10 +54,10 @@ export default function DangerBanner({ result }: Props) {
       <div className="text-center mt-4 md:mt-0 bg-black/40 px-4 py-2 rounded-xl border border-white/10 backdrop-blur-sm shrink-0 flex items-center gap-3">
         <div className="text-left hidden sm:block">
           <div className={`text-[10px] ${colors.text} uppercase tracking-widest font-bold leading-tight`}>
-            Danger<br />Score
+            Wellness<br />Score
           </div>
         </div>
-        <div className={`text-4xl md:text-5xl font-black ${colors.score} drop-shadow-[0_0_15px_rgba(225,29,72,0.5)]`}>
+        <div className={`text-4xl md:text-5xl font-black ${colors.score}`}>
           {result.danger_score}
           <span className="text-xl text-slate-700">/100</span>
         </div>

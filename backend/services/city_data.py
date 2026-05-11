@@ -13,6 +13,7 @@ import requests
 from datetime import datetime, timedelta, timezone
 from supabase import create_client, Client
 from models.schemas import Coordinate, Zone, SwarmPin
+import math
 
 logger = logging.getLogger(__name__)
 
@@ -20,11 +21,91 @@ logger = logging.getLogger(__name__)
 LAT_DELTA = 0.007
 LNG_DELTA = 0.010
 
+# True radius filter after bbox prefilter (matches "0.5 miles" copy in UI/scoring)
+RADIUS_METERS = 0.5 * 1609.344
+
+# Intended recency windows (must match how we describe scoring/UI)
+CRIME_DAYS_BACK = 30
+REPORTS_311_DAYS_BACK = 30
+PERMIT_DAYS_BACK = 90
+EVICTION_DAYS_BACK = 180
+
+# Socrata/Supabase fetch caps (used to detect truncated samples)
+CRIME_FETCH_LIMIT = 200
+REPORTS_FETCH_LIMIT = 300
+PERMITS_FETCH_LIMIT = 200
+EVICTIONS_FETCH_LIMIT = 100
+
 # NYC Open Data (Socrata) base URL
 SOCRATA_BASE = "https://data.cityofnewyork.us/resource"
 
 
 _supabase_reachable: bool | None = None  # None = untested, True/False = known
+
+
+def _is_parking_vehicle_noise_complaint(row: dict) -> bool:
+    """
+    NYC 311 includes a huge volume of parking / vehicle / traffic complaints.
+    These are not renter safety signals for lease decisions, so we exclude them
+    from scoring, map pins, and AI briefs.
+    """
+    ctype = (row.get("complaint_type") or "").lower()
+    desc = (row.get("descriptor") or "").lower()
+    blob = f"{ctype} {desc}"
+
+    # Strong signal: complaint type names are usually explicit in NYC 311.
+    if any(
+        k in ctype
+        for k in (
+            "parking",
+            "vehicle",
+            "traffic",
+            "highway",
+            "gridlock",
+            "taxi",
+            "tlc",
+            "for-hire",
+            "for hire",
+            "commuter van",
+            "tow",
+            "license plate",
+            "abandoned vehicle",
+            "blocked driveway",
+            "hydrant",
+        )
+    ):
+        return True
+
+    # Descriptor-only cases (still clearly parking/vehicle enforcement noise).
+    desc_keys = (
+        "illegal parking",
+        "no parking",
+        "double parked",
+        "double-parked",
+        "hydrant",
+        "blocked hydrant",
+        "blocked driveway",
+        "commercial vehicle",
+        "gridlock",
+        "traffic",
+        "tlc",
+        "taxi",
+        "tow",
+        "abandoned vehicle",
+    )
+    if any(k in desc for k in desc_keys):
+        return True
+
+    # Avoid overly-broad substring matches on generic words like "car"/"truck".
+    if "parking" in blob or "parked" in blob:
+        return True
+
+    return False
+
+
+def _filter_311_rows(rows: list[dict]) -> list[dict]:
+    return [r for r in rows if not _is_parking_vehicle_noise_complaint(r)]
+
 
 def _get_client() -> Client:
     url = os.getenv("SUPABASE_URL", "")
@@ -44,6 +125,47 @@ def _bbox(coord: Coordinate) -> dict:
         "lng_min": coord.lng - LNG_DELTA,
         "lng_max": coord.lng + LNG_DELTA,
     }
+
+
+def _since_iso(days_back: int) -> str:
+    """UTC ISO timestamp used for Supabase timestamptz comparisons."""
+    return (datetime.now(timezone.utc) - timedelta(days=days_back)).isoformat()
+
+
+def _since_socrata(days_back: int) -> str:
+    """Socrata expects an ISO-ish string without timezone suffix."""
+    return (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _haversine_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    r = 6371000.0
+    p1 = math.radians(lat1)
+    p2 = math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dl = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * r * math.asin(min(1.0, math.sqrt(a)))
+
+
+def filter_rows_within_radius(
+    coord: Coordinate,
+    rows: list[dict],
+    *,
+    radius_meters: float = RADIUS_METERS,
+) -> list[dict]:
+    """Keep rows with valid lat/lng within radius_meters of coord."""
+    out: list[dict] = []
+    for row in rows:
+        try:
+            lat = float(row.get("lat"))
+            lng = float(row.get("lng"))
+        except (TypeError, ValueError):
+            continue
+        if not lat or not lng:
+            continue
+        if _haversine_meters(coord.lat, coord.lng, lat, lng) <= radius_meters:
+            out.append(row)
+    return out
 
 
 def _socrata_fetch(endpoint: str, where: str, order: str = "", limit: int = 200) -> list[dict]:
@@ -78,6 +200,7 @@ async def get_nearby_crime(coord: Coordinate) -> list[dict]:
     try:
         client = _get_client()
         bb = _bbox(coord)
+        since = _since_iso(CRIME_DAYS_BACK)
         result = (
             client.table("crime_reports")
             .select("lat, lng, crime_type, description, occurred_at")
@@ -85,7 +208,8 @@ async def get_nearby_crime(coord: Coordinate) -> list[dict]:
             .lte("lat", bb["lat_max"])
             .gte("lng", bb["lng_min"])
             .lte("lng", bb["lng_max"])
-            .limit(200)
+            .gte("occurred_at", since)
+            .limit(CRIME_FETCH_LIMIT)
             .execute()
         )
         _supabase_reachable = True
@@ -101,11 +225,13 @@ async def get_nearby_crime(coord: Coordinate) -> list[dict]:
     # Live fallback — filter only by location, sorted by most recent
     logger.info("Crime: Supabase empty — fetching live from NYC Open Data.")
     bb = _bbox(coord)
+    since = _since_socrata(CRIME_DAYS_BACK)
     where = (
         f"latitude >= '{bb['lat_min']}' AND latitude <= '{bb['lat_max']}' "
-        f"AND longitude >= '{bb['lng_min']}' AND longitude <= '{bb['lng_max']}'"
+        f"AND longitude >= '{bb['lng_min']}' AND longitude <= '{bb['lng_max']}' "
+        f"AND cmplnt_fr_dt >= '{since}'"
     )
-    raw = await _socrata_fetch_async("5uac-w243.json", where, limit=200)
+    raw = await _socrata_fetch_async("5uac-w243.json", where, limit=CRIME_FETCH_LIMIT)
     result = []
     for r in raw:
         try:
@@ -133,6 +259,7 @@ async def get_nearby_311(coord: Coordinate) -> list[dict]:
     try:
         client = _get_client()
         bb = _bbox(coord)
+        since = _since_iso(REPORTS_311_DAYS_BACK)
         result = (
             client.table("reports_311")
             .select("lat, lng, complaint_type, descriptor, created_at")
@@ -140,26 +267,28 @@ async def get_nearby_311(coord: Coordinate) -> list[dict]:
             .lte("lat", bb["lat_max"])
             .gte("lng", bb["lng_min"])
             .lte("lng", bb["lng_max"])
-            .limit(300)
+            .gte("created_at", since)
+            .limit(REPORTS_FETCH_LIMIT)
             .execute()
         )
         rows = result.data or []
         if rows:
-            logger.info(f"311: {len(rows)} rows from Supabase.")
-            return rows
+            filtered = _filter_311_rows(rows)
+            logger.info(f"311: {len(rows)} rows from Supabase ({len(filtered)} after parking/vehicle filter).")
+            return filtered
     except Exception as e:
         logger.warning(f"Supabase 311 query failed: {e}")
 
     # Live fallback
     logger.info("311: Supabase empty — fetching live from NYC Open Data.")
     bb = _bbox(coord)
-    since = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%S")
+    since = _since_socrata(REPORTS_311_DAYS_BACK)
     where = (
         f"latitude >= '{bb['lat_min']}' AND latitude <= '{bb['lat_max']}' "
         f"AND longitude >= '{bb['lng_min']}' AND longitude <= '{bb['lng_max']}' "
         f"AND created_date >= '{since}'"
     )
-    raw = await _socrata_fetch_async("erm2-nwe9.json", where, limit=300)
+    raw = await _socrata_fetch_async("erm2-nwe9.json", where, limit=REPORTS_FETCH_LIMIT)
     result = []
     for r in raw:
         try:
@@ -172,8 +301,9 @@ async def get_nearby_311(coord: Coordinate) -> list[dict]:
             })
         except (KeyError, ValueError):
             continue
-    logger.info(f"311: {len(result)} rows from live fetch.")
-    return result
+    filtered = _filter_311_rows(result)
+    logger.info(f"311: {len(result)} rows from live fetch ({len(filtered)} after parking/vehicle filter).")
+    return filtered
 
 
 # ─── Building Permits ─────────────────────────────────────────────────────────
@@ -183,6 +313,7 @@ async def get_nearby_permits(coord: Coordinate) -> list[dict]:
     try:
         client = _get_client()
         bb = _bbox(coord)
+        since = _since_iso(PERMIT_DAYS_BACK)
         result = (
             client.table("building_permits")
             .select("lat, lng, permit_type, permit_status, job_description, filing_date")
@@ -190,7 +321,8 @@ async def get_nearby_permits(coord: Coordinate) -> list[dict]:
             .lte("lat", bb["lat_max"])
             .gte("lng", bb["lng_min"])
             .lte("lng", bb["lng_max"])
-            .limit(200)
+            .gte("filing_date", since)
+            .limit(PERMITS_FETCH_LIMIT)
             .execute()
         )
         rows = result.data or []
@@ -203,11 +335,13 @@ async def get_nearby_permits(coord: Coordinate) -> list[dict]:
     # Live fallback — DOB permit issuances, filter by location
     logger.info("Permits: Supabase empty — fetching live from NYC Open Data.")
     bb = _bbox(coord)
+    since = _since_socrata(PERMIT_DAYS_BACK)
     where = (
         f"latitude >= '{bb['lat_min']}' AND latitude <= '{bb['lat_max']}' "
-        f"AND longitude >= '{bb['lng_min']}' AND longitude <= '{bb['lng_max']}'"
+        f"AND longitude >= '{bb['lng_min']}' AND longitude <= '{bb['lng_max']}' "
+        f"AND filing_date >= '{since}'"
     )
-    raw = await _socrata_fetch_async("ipu4-2q9a.json", where, limit=200)
+    raw = await _socrata_fetch_async("ipu4-2q9a.json", where, limit=PERMITS_FETCH_LIMIT)
     result = []
     for r in raw:
         try:
@@ -236,6 +370,7 @@ async def get_nearby_evictions(coord: Coordinate) -> list[dict]:
     try:
         client = _get_client()
         bb = _bbox(coord)
+        since = _since_iso(EVICTION_DAYS_BACK)
         result = (
             client.table("eviction_records")
             .select("lat, lng, case_type, filing_date")
@@ -243,7 +378,8 @@ async def get_nearby_evictions(coord: Coordinate) -> list[dict]:
             .lte("lat", bb["lat_max"])
             .gte("lng", bb["lng_min"])
             .lte("lng", bb["lng_max"])
-            .limit(100)
+            .gte("filing_date", since)
+            .limit(EVICTIONS_FETCH_LIMIT)
             .execute()
         )
         rows = result.data or []
@@ -256,7 +392,7 @@ async def get_nearby_evictions(coord: Coordinate) -> list[dict]:
     # Live fallback — NYC marshal evictions
     logger.info("Evictions: Supabase empty — fetching live from NYC Open Data.")
     bb = _bbox(coord)
-    since = (datetime.now(timezone.utc) - timedelta(days=180)).strftime("%Y-%m-%dT%H:%M:%S")
+    since = _since_socrata(EVICTION_DAYS_BACK)
     where = (
         f"latitude >= '{bb['lat_min']}' AND latitude <= '{bb['lat_max']}' "
         f"AND longitude >= '{bb['lng_min']}' AND longitude <= '{bb['lng_max']}' "

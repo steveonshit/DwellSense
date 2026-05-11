@@ -59,14 +59,14 @@ async def generate_pdf(data: dict):
     pdf.set_font("Helvetica", "B", 11)
     pdf.set_text_color(148, 163, 184)
     pdf.set_xy(16, pdf.get_y() + 4)
-    pdf.cell(0, 6, "DANGER SCORE", ln=True)
+    pdf.cell(0, 6, "WELLNESS SCORE (100 = BEST)", ln=True)
     pdf.set_font("Helvetica", "B", 28)
     pdf.set_text_color(r, g, b)
     pdf.set_x(16)
     pdf.cell(40, 12, str(data.get("danger_score", "?")))
     pdf.set_font("Helvetica", "B", 14)
     pdf.set_text_color(255, 255, 255)
-    pdf.cell(0, 12, f"/ 100 — {data.get('risk_label', risk_level)}", ln=True)
+    pdf.cell(0, 12, f"/ 100 (0 = worst) — {data.get('risk_label', risk_level)}", ln=True)
 
     # ── Summary ───────────────────────────────────────────────────────────────
     pdf.set_xy(10, pdf.get_y() + 8)

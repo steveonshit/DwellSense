@@ -63,6 +63,7 @@ export default function ResultsDashboard({ result, onReset }: Props) {
           mapData={result.map_data}
           logistics={result.logistics}
           activeRoute={activeRoute}
+          flightExposure={result.flight_exposure}
         />
 
         <ThreatCarousel cards={result.threat_cards} />

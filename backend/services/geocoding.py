@@ -1,6 +1,7 @@
 """Mapbox Geocoding — converts a plain-text address to lat/lng."""
 
 import os
+import urllib.parse
 import requests
 from models.schemas import Coordinate
 
@@ -19,8 +20,13 @@ async def geocode(address: str) -> tuple[Coordinate, str]:
         raise RuntimeError("MAPBOX_TOKEN is not set in environment variables.")
 
     try:
-        resp = requests.get(
-            GEOCODE_URL.format(query=address),
+        # Some environments set HTTPS_PROXY/HTTP_PROXY which can break outbound calls
+        # (e.g., tunnel errors / 403). For geocoding, prefer a direct connection.
+        session = requests.Session()
+        session.trust_env = False
+
+        resp = session.get(
+            GEOCODE_URL.format(query=urllib.parse.quote(address, safe="")),
             params={
                 "access_token": mapbox_token,
                 "country": "US",

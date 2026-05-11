@@ -55,13 +55,32 @@ export interface FlightPath {
   start: Coordinate;
   end: Coordinate;
   label: string;
+  /** Optional polyline points (ADS‑B tracks). */
+  path?: Coordinate[] | null;
+  closest_miles?: number | null;
+  median_altitude_ft?: number | null;
+  sample_count?: number | null;
+  callsign?: string | null;
+  airline?: string | null;
+  flight_number?: string | null;
+  last_seen_utc?: string | null;
+}
+
+export interface FlightExposure {
+  night_overflights_per_hour: number;
+  day_overflights_per_hour: number;
+  typical_altitude_ft?: number | null;
+  trend?: "stable" | "variable" | null;
+  data_quality: "good" | "sparse" | "unavailable";
 }
 
 export interface MapData {
   target: Coordinate;
   zones: Zone[];
   swarm: SwarmPin[];
-  flight_path: FlightPath | null;
+  flight_paths?: FlightPath[];
+  /** Back-compat: some responses include a single path */
+  flight_path?: FlightPath | null;
 }
 
 export interface ScanResult {
@@ -75,6 +94,7 @@ export interface ScanResult {
   logistics: LogisticsCard[];
   threat_cards: ThreatCard[];
   map_data: MapData;
+  flight_exposure?: FlightExposure | null;
   /** From backend: whether a real GEMINI_API_KEY was loaded (check Network → /api/scan response). */
   gemini_configured?: boolean;
 }

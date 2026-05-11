@@ -6,6 +6,7 @@ only has to write bullet text (see ai_analysis.py).
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 # Order matches the UI carousel / original Gemini system prompt.
@@ -94,30 +95,83 @@ def compute_risk_from_counts(
     reports_count: int,
     permit_count: int,
     eviction_count: int = 0,
+    *,
+    crime_capped: bool = False,
+    reports_capped: bool = False,
+    permits_capped: bool = False,
+    evictions_capped: bool = False,
 ) -> dict[str, Any]:
-    """Same scoring band as the legacy fallback analysis."""
-    score = min(
-        100,
-        int((crime_count * 0.4) + (reports_count * 0.3) + (permit_count * 0.5)),
-    )
-    score = max(10, score)
+    """
+    Percentile-style scoring (Option C), inverted for UX:
 
-    if score >= 80:
-        risk_level, risk_label = "EXTREME", "EXTREME RISK DETECTED"
-    elif score >= 60:
-        risk_level, risk_label = "HIGH", "HIGH RISK DETECTED"
-    elif score >= 40:
-        risk_level, risk_label = "MODERATE", "MODERATE RISK"
+    - Internally we estimate a 0..100 "raw hazard" from municipal counts.
+    - We return `danger_score` as a **0..100 wellness-oriented score** where **100 is best** and **0 is worst**.
+    """
+
+    def _percentile_from_count(
+        x: int,
+        *,
+        median_count: float,
+        p90_count: float,
+    ) -> float:
+        x = max(0, int(x))
+        # logistic over log1p(x); ensures diminishing returns and smooth percentiles
+        lx = math.log1p(x)
+        l50 = math.log1p(max(0.0, float(median_count)))
+        l90 = math.log1p(max(1e-6, float(p90_count)))
+        # Choose k so that p90 roughly maps near 0.90 (not exactly, but close)
+        denom = max(1e-6, (l90 - l50))
+        k = 2.2 / denom
+        z = (lx - l50) * k
+        return 1.0 / (1.0 + math.exp(-z))
+
+    # Baselines (approx NYC-wide) — tune after we test a few addresses.
+    crime_p = _percentile_from_count(crime_count, median_count=8, p90_count=45)
+    reports_p = _percentile_from_count(reports_count, median_count=12, p90_count=70)
+    permits_p = _percentile_from_count(permit_count, median_count=1, p90_count=8)
+    evict_p = _percentile_from_count(eviction_count, median_count=0.5, p90_count=3)
+
+    # Weighting (sums to 1.0)
+    score_01 = (
+        (0.40 * crime_p)
+        + (0.25 * reports_p)
+        + (0.15 * permits_p)
+        + (0.20 * evict_p)
+    )
+
+    raw_hazard = int(round(max(0.0, min(1.0, score_01)) * 100))
+
+    capped = crime_capped or reports_capped or permits_capped or evictions_capped
+
+    safety_score = int(round(max(0.0, min(100.0, 100 - raw_hazard))))
+
+    # If any dataset hits our fetch cap, the true neighborhood density may be higher than
+    # the counted rows. Don't claim a "perfect" safety score when we're truncated.
+    if capped:
+        safety_score = min(safety_score, 90)
+
+    # Bands are based on SAFETY (higher is better).
+    if safety_score <= 20:
+        risk_level, risk_label = "EXTREME", "WEAK SIGNALS"
+    elif safety_score <= 40:
+        risk_level, risk_label = "HIGH", "BELOW-AVERAGE"
+    elif safety_score <= 60:
+        risk_level, risk_label = "MODERATE", "MIXED SIGNALS"
     else:
-        risk_level, risk_label = "LOW", "LOW RISK"
+        risk_level, risk_label = "LOW", "STRONG SIGNALS"
+
+    suffix_parts: list[str] = []
+    if capped:
+        suffix_parts.append("Counts may be capped by our data sample limits in very dense areas.")
 
     risk_description = (
         f"Analysis based on {crime_count} crime reports, {reports_count} 311 calls, "
-        f"{permit_count} permits, and {eviction_count} eviction filings nearby."
+        f"{permit_count} active permits, and {eviction_count} eviction filings within ~0.5 miles."
+        + (" " + " ".join(suffix_parts) if suffix_parts else "")
     )
 
     return {
-        "danger_score": score,
+        "danger_score": safety_score,
         "risk_level": risk_level,
         "risk_label": risk_label,
         "risk_description": risk_description,

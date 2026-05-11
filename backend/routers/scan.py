@@ -6,9 +6,29 @@ Takes an address, runs all data lookups in parallel, and returns the full ScanRe
 import asyncio
 from fastapi import APIRouter, HTTPException
 from models.schemas import ScanRequest, ScanResponse, MapData, ThreatCard, LogisticsCard
-from services import geocoding, city_data, places, flights, ai_analysis
+from services import geocoding, city_data, places, flights, ai_analysis, flight_exposure
+from services.city_data import (
+    CRIME_FETCH_LIMIT,
+    EVICTIONS_FETCH_LIMIT,
+    PERMITS_FETCH_LIMIT,
+    REPORTS_FETCH_LIMIT,
+)
 
 router = APIRouter()
+
+NYC_BOUNDS = {
+    "lat_min": 40.4774,  # SW corner (approx)
+    "lat_max": 40.9176,  # NE corner (approx)
+    "lng_min": -74.2591,
+    "lng_max": -73.7004,
+}
+
+
+def _is_within_nyc(coord) -> bool:
+    return (
+        NYC_BOUNDS["lat_min"] <= coord.lat <= NYC_BOUNDS["lat_max"]
+        and NYC_BOUNDS["lng_min"] <= coord.lng <= NYC_BOUNDS["lng_max"]
+    )
 
 
 @router.post("/scan", response_model=ScanResponse)
@@ -25,6 +45,13 @@ async def scan(request: ScanRequest):
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
 
+    # NYC-only guardrail (product scope).
+    if not _is_within_nyc(coord):
+        raise HTTPException(
+            status_code=400,
+            detail="Out of reach — NYC addresses only.",
+        )
+
     # ── 2. Fire all data lookups in parallel ──────────────────────────────────
     crime_task = city_data.get_nearby_crime(coord)
     reports_311_task = city_data.get_nearby_311(coord)
@@ -40,8 +67,20 @@ async def scan(request: ScanRequest):
         logistics_task,
     )
 
-    # ── 3. Flight path (sync — pure math) ────────────────────────────────────
-    flight_path = flights.get_nearest_flight_corridor(coord)
+    # Tighten spatial accuracy: bbox queries are a prefilter; scoring should reflect a true ~0.5mi radius.
+    crime_capped = len(crime) >= CRIME_FETCH_LIMIT
+    reports_capped = len(reports_311) >= REPORTS_FETCH_LIMIT
+    permits_capped = len(permits) >= PERMITS_FETCH_LIMIT
+    evictions_capped = len(evictions) >= EVICTIONS_FETCH_LIMIT
+
+    crime = city_data.filter_rows_within_radius(coord, crime)
+    reports_311 = city_data.filter_rows_within_radius(coord, reports_311)
+    permits = city_data.filter_rows_within_radius(coord, permits)
+    evictions = city_data.filter_rows_within_radius(coord, evictions)
+
+    # ── 3. Flight corridors (ADS-B or static) ────────────────────────────────
+    flight_paths = await flights.get_flight_paths(coord, limit=3)
+    flight_path = flight_paths[0] if flight_paths else None
 
     # ── 4. Build map data ────────────────────────────────────────────────────
     zones = city_data.build_zones(crime, reports_311, permits)
@@ -50,6 +89,7 @@ async def scan(request: ScanRequest):
         target=coord,
         zones=zones,
         swarm=swarm,
+        flight_paths=flight_paths,
         flight_path=flight_path,
     )
 
@@ -63,6 +103,10 @@ async def scan(request: ScanRequest):
         evictions=evictions,
         logistics=logistics,
         flight_path=flight_path,
+        crime_capped=crime_capped,
+        reports_capped=reports_capped,
+        permits_capped=permits_capped,
+        evictions_capped=evictions_capped,
     )
 
     # ── 6. Parse AI result into typed models ──────────────────────────────────
@@ -84,6 +128,7 @@ async def scan(request: ScanRequest):
 
     # Risk level color label
     risk_emoji_map = {
+        # `danger_score` is a wellness-oriented score (100 = best). Risk bands are inverted vs the old hazard UI.
         "EXTREME": "🚨",
         "HIGH": "⚠️",
         "MODERATE": "🟡",
@@ -101,6 +146,7 @@ async def scan(request: ScanRequest):
         logistics=logistics,
         threat_cards=threat_cards,
         map_data=map_data,
+        flight_exposure=flight_exposure.compute_exposure(coord),
         gemini_configured=bool(ai_result.get("gemini_configured", False)),
         gemini_status=ai_result.get("gemini_status"),
         gemini_latency_ms=ai_result.get("gemini_latency_ms"),
