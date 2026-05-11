@@ -3,6 +3,7 @@ DwellSense Backend — FastAPI application entry point.
 """
 
 import os
+from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 
 load_dotenv()  # Must happen before any service imports that read os.getenv()
@@ -20,10 +21,45 @@ logger = logging.getLogger("dwellsense")
 scheduler = AsyncIOScheduler()
 
 
+def _env_flag(name: str) -> bool:
+    v = os.getenv(name, "").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
+async def _adsb_ingest_job() -> None:
+    """Background OpenSky → Supabase samples for flight_exposure (optional)."""
+    from jobs import adsb_ingest
+
+    try:
+        n = await adsb_ingest.ingest_once()
+        logger.info("ADS-B ingest: stored ~%s samples", n)
+    except Exception:
+        logger.exception("ADS-B ingest failed (table missing or OpenSky/Supabase error)")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Schedule daily NYC data refresh at 3:00 AM
     scheduler.add_job(daily_refresh, "cron", hour=3, minute=0, id="daily_refresh")
+
+    # Optional: periodic ADS-B samples into public.adsb_samples (see backend/sql/adsb_samples.sql)
+    if _env_flag("ADSB_INGEST_ENABLED"):
+        interval = max(60, int(os.getenv("ADSB_INGEST_INTERVAL_SECONDS", "120")))
+        scheduler.add_job(
+            _adsb_ingest_job,
+            "interval",
+            seconds=interval,
+            id="adsb_ingest",
+            replace_existing=True,
+            coalesce=True,
+            max_instances=1,
+            next_run_time=datetime.now(timezone.utc) + timedelta(seconds=20),
+        )
+        logger.info(
+            "ADS-B ingest scheduler enabled — every %ss (set ADSB_INGEST_ENABLED=false to disable).",
+            interval,
+        )
+
     scheduler.start()
     logger.info("Daily refresh scheduler started — runs every day at 3:00 AM.")
     yield

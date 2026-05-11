@@ -152,7 +152,9 @@ Rationale: illegal parking volume is not a meaningful renter safety / lease-qual
 | `PORT` | Railway sets this automatically |
 | `OPENSKY_USERNAME` | Optional. OpenSky username (higher rate limits for ADS‑B). |
 | `OPENSKY_PASSWORD` | Optional. OpenSky password. |
-| `FLIGHT_MODE` | Optional. `static` (default) or `adsb` for live ADS‑B tracks (local dev). |
+| `FLIGHT_MODE` | Optional. `static` (default) or `adsb` for live ADS‑B tracks. |
+| `ADSB_INGEST_ENABLED` | Optional. `true` to run OpenSky → `adsb_samples` on a timer inside the API process (requires SQL table). Default off. |
+| `ADSB_INGEST_INTERVAL_SECONDS` | Optional. Ingest cadence when enabled (default **120**, minimum **60**). |
 
 ### Frontend (Vercel / local)
 
@@ -205,7 +207,7 @@ For the “flight exposure score” prototype, we also added:
 
 This table stores ADS‑B position samples so we can compute **night vs day overflight rates**, **typical altitude**, and a **data quality** badge over time.
 
-**Important:** `adsb_samples` is **not** populated by `daily_refresh.py`. It is populated by the separate ingestion loop `backend/jobs/adsb_ingest.py`.
+**Important:** `adsb_samples` is **not** populated by `daily_refresh.py`. Rows are written by **`backend/jobs/adsb_ingest.py`** — either run **`python -m jobs.adsb_ingest`** manually, or enable **`ADSB_INGEST_ENABLED=true`** in production so **`main.py`** schedules the same ingest on the API service.
 
 ---
 
@@ -213,6 +215,7 @@ This table stores ADS‑B position samples so we can compute **night vs day over
 
 | Area | Path |
 |------|------|
+| Main app + schedulers | `backend/main.py` |
 | Main scan pipeline | `backend/routers/scan.py` |
 | Threat card layout + deterministic risk | `backend/services/threat_card_layout.py` |
 | Gemini (bullets only) + merge / fallback | `backend/services/ai_analysis.py` |
@@ -439,7 +442,9 @@ python main.py
 ### ADS‑B exposure prototype (local)
 
 1. Create `adsb_samples` table in Supabase: run `backend/sql/adsb_samples.sql` in the Supabase SQL editor.
-2. Start ingestion loop (writes ADS‑B samples to Supabase):
+2. **Production ingest:** set **`ADSB_INGEST_ENABLED=true`** on Railway (same service as the API). Optionally tune **`ADSB_INGEST_INTERVAL_SECONDS`** (default 120).
+
+**Local manual loop (still supported):**
 
 ```bash
 cd backend && source venv/bin/activate
@@ -494,10 +499,10 @@ We have implemented and tested locally (Next.js dev + FastAPI):
   - “Flight Activity” UI module
 - Flight exposure prototype (`flight_exposure`) backed by Supabase `adsb_samples` + ingest loop
 
-**Not deployed yet:** none of the above is guaranteed to be on production until we:
+**Not deployed yet:** production must still:
 
-- commit + push to `main`
-- ensure Railway/Vercel env vars are set
+- have latest **`main`** deployed on Railway/Vercel
+- ensure Railway/Vercel env vars are set (`FLIGHT_MODE`, `ADSB_INGEST_*`, etc.)
 - apply `backend/sql/adsb_samples.sql` to the production Supabase (if using exposure)
 - decide whether production should use `FLIGHT_MODE=static` or a paid ADS‑B provider + ingestion pipeline
 
@@ -505,7 +510,7 @@ We have implemented and tested locally (Next.js dev + FastAPI):
 
 - **Commercial ADS‑B provider vs OpenSky** (coverage, SLA, licensing)
 - **Whether prod should default to `FLIGHT_MODE=static`** until ingestion is stable
-- **Run ingestion as a Railway worker/cron** (not a laptop terminal)
+- **Ingestion:** set **`ADSB_INGEST_ENABLED=true`** on Railway (timer inside API) or run a separate worker / `python -m jobs.adsb_ingest`
 - **Replace UTC night/day heuristic** with NYC-local windows + clearer copy (“late night”, “weekday vs weekend”)
 
 ---
@@ -517,8 +522,8 @@ We have implemented and tested locally (Next.js dev + FastAPI):
 - **Flights:** evolved from static corridors → multi-corridor → OpenSky live tracks with polylines + UI polish (`backend/services/flights.py`, `frontend/components/MapComponent.tsx`).
 - **Flight UX:** multiple ✈️ animations (one per path), “seen Xm ago” relative timestamps from `last_seen_utc`, and copy that avoids dumping raw ADS‑B jargon on renters.
 - **Mapbox paint correctness:** avoid `undefined` dash arrays when toggling dashed vs solid lines.
-- **Exposure prototype:** `adsb_samples` + ingest + `flight_exposure` on scan (`backend/sql/adsb_samples.sql`, `backend/jobs/adsb_ingest.py`, `backend/services/flight_exposure.py`, `backend/routers/scan.py`, `backend/models/schemas.py`, `frontend/lib/types.ts`).
+- **Exposure prototype:** `adsb_samples` + ingest + `flight_exposure` on scan; optional **`ADSB_INGEST_ENABLED`** timer in `main.py` (`backend/sql/adsb_samples.sql`, `backend/jobs/adsb_ingest.py`, `backend/services/flight_exposure.py`, `backend/routers/scan.py`, `backend/models/schemas.py`, `frontend/lib/types.ts`).
 
 ---
 
-*Last updated: NYC-only guardrails + NYC map bounds; Mapbox geocoding proxy hardening; multi-flight overlays; OpenSky live tracks + Flight Activity UI; flight exposure prototype (Supabase-backed) with fail-open behavior; deployment still pending.*
+*Last updated: optional ADS-B sample ingest via `ADSB_INGEST_ENABLED` in `main.py`; docs for Supabase SQL + Railway env.*

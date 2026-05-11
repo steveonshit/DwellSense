@@ -97,6 +97,15 @@ CREATE TABLE eviction_records (
 CREATE INDEX eviction_records_lat_lng ON eviction_records (lat, lng);
 ```
 
+### Flight exposure — `adsb_samples` (optional)
+
+For **Flight Activity** exposure stats (`flight_exposure` on `/scan`), create the samples table and enable ingestion:
+
+1. In Supabase **SQL Editor**, open and run **`backend/sql/adsb_samples.sql`** (creates `public.adsb_samples` + indexes).
+2. In production, set **`ADSB_INGEST_ENABLED=true`** on the backend (Railway). The API schedules OpenSky pulls every **`ADSB_INGEST_INTERVAL_SECONDS`** (default **120**). Use **`OPENSKY_USERNAME`** / **`OPENSKY_PASSWORD`** for better rate limits.
+
+For local-only testing you can still run **`python -m jobs.adsb_ingest`** in a terminal.
+
 ---
 
 ### Step 3 — Configure Environment Variables
