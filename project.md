@@ -154,7 +154,7 @@ Rationale: illegal parking volume is not a meaningful renter safety / lease-qual
 | `OPENSKY_PASSWORD` | Optional. OpenSky password. |
 | `FLIGHT_MODE` | Optional. `static` (default) or `adsb` for live ADS‑B tracks. |
 | `ADSB_INGEST_ENABLED` | Optional. `true` to run OpenSky → `adsb_samples` on a timer inside the API process (requires SQL table). Default off. |
-| `ADSB_INGEST_INTERVAL_SECONDS` | Optional. Ingest cadence when enabled (default **120**, minimum **60**). |
+| `ADSB_INGEST_INTERVAL_SECONDS` | Optional. Ingest cadence when enabled (default **3600** = 1 hour, minimum **60**). |
 
 ### Frontend (Vercel / local)
 
@@ -296,6 +296,14 @@ Some queries are intentionally capped (e.g. dense Manhattan can hit limits). Whe
 **Implemented:**
 
 - **Smaller Gemini ask:** Scoring and threat-card chrome live in Python; Gemini returns only **`bullets`** JSON — reduces latency vs the old full-card JSON.
+
+---
+
+## Working Style (Production Standard)
+
+- **Reliability first**: treat this as a production system; avoid shortcuts and “demo” behavior.
+- **No fake outputs**: if a data source is unavailable, surface **unavailable** (with graceful degradation) rather than inventing approximations without clear labeling.
+- **When giving operational instructions** (dashboards, env vars, deploy steps): provide them **clearly**, **grouped together**, and in **bullet-point format** with exact variable names/values.
 
 **Not yet implemented** (discussed direction):
 
@@ -445,7 +453,7 @@ python main.py
 
 1. **Preferred:** configure GitHub Action secrets (see **README** / **`.github/workflows/supabase-migrations.yml`**) and run **Deploy Supabase migrations** or push to `main`.
 2. **Manual:** run `backend/sql/adsb_samples.sql` in the Supabase SQL editor (same DDL as `supabase/migrations/`).
-2. **Production ingest:** set **`ADSB_INGEST_ENABLED=true`** on Railway (same service as the API). Optionally tune **`ADSB_INGEST_INTERVAL_SECONDS`** (default 120).
+2. **Production ingest:** set **`ADSB_INGEST_ENABLED=true`** on Railway (same service as the API). Optionally tune **`ADSB_INGEST_INTERVAL_SECONDS`** (default **3600** = 1 hour in code; set on Railway to override).
 
 **Local manual loop (still supported):**
 

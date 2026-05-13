@@ -111,7 +111,7 @@ For **Flight Activity** exposure stats (`flight_exposure` on `/scan`), create `p
 
 **Fallback — paste SQL once:** open **`backend/sql/adsb_samples.sql`** (same DDL as the migration) in Supabase **SQL Editor** and run.
 
-**Ingest samples:** set **`ADSB_INGEST_ENABLED=true`** on Railway (see `backend/.env.example`). Optionally **`OPENSKY_USERNAME`** / **`OPENSKY_PASSWORD`**. For local testing: **`python -m jobs.adsb_ingest`**.
+**Ingest samples:** set **`ADSB_INGEST_ENABLED=true`** on Railway (see `backend/.env.example`). Default ingest cadence in **`main.py`** is **hourly** unless **`ADSB_INGEST_INTERVAL_SECONDS`** is set. Optionally **`OPENSKY_USERNAME`** / **`OPENSKY_PASSWORD`**. For local testing: **`python -m jobs.adsb_ingest`**.
 
 ---
 

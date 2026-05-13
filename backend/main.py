@@ -44,7 +44,8 @@ async def lifespan(app: FastAPI):
 
     # Optional: periodic ADS-B samples into public.adsb_samples (see backend/sql/adsb_samples.sql)
     if _env_flag("ADSB_INGEST_ENABLED"):
-        interval = max(60, int(os.getenv("ADSB_INGEST_INTERVAL_SECONDS", "120")))
+        # Default 1h: fewer OpenSky calls, less log noise; override via ADSB_INGEST_INTERVAL_SECONDS (min 60s).
+        interval = max(60, int(os.getenv("ADSB_INGEST_INTERVAL_SECONDS", "3600")))
         scheduler.add_job(
             _adsb_ingest_job,
             "interval",
