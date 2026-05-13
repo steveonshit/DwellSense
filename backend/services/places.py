@@ -145,6 +145,14 @@ def _get_logistics_blocking(coord: Coordinate) -> list[LogisticsCard]:
     Returns logistics cards using Places API (New).
     Falls back to static airport/mall only if no API key.
     """
+    try:
+        return _get_logistics_blocking_inner(coord)
+    except Exception:
+        logger.exception("Logistics lookup failed — using static airport/mall cards only.")
+        return _fallback_static_cards(coord)
+
+
+def _get_logistics_blocking_inner(coord: Coordinate) -> list[LogisticsCard]:
     api_key = os.getenv("GOOGLE_MAPS_API_KEY", "")
     if not api_key:
         logger.warning("GOOGLE_MAPS_API_KEY not set — returning static cards only.")

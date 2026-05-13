@@ -45,7 +45,16 @@ async def geocode(address: str) -> tuple[Coordinate, str]:
         raise ValueError(f"Address not found: '{address}'. Try adding a city or zip code.")
 
     best = features[0]
-    lng, lat = best["geometry"]["coordinates"]
+    try:
+        geom = best.get("geometry") or {}
+        coords = geom.get("coordinates")
+        if not coords or len(coords) < 2:
+            raise ValueError("missing coordinates")
+        lng, lat = float(coords[0]), float(coords[1])
+    except (TypeError, ValueError, KeyError, IndexError) as e:
+        raise ValueError(
+            f"Address not found: '{address}'. Try adding a city or zip code."
+        ) from e
     formatted = best.get("place_name", address)
 
     return Coordinate(lat=lat, lng=lng), formatted

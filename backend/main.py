@@ -10,8 +10,12 @@ load_dotenv()  # Must happen before any service imports that read os.getenv()
 
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError, ResponseValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from routers import health, scan, pdf
 from jobs.daily_refresh import run_all as daily_refresh
@@ -87,6 +91,30 @@ app.add_middleware(
 app.include_router(health.router)
 app.include_router(scan.router)
 app.include_router(pdf.router)
+
+
+@app.exception_handler(ResponseValidationError)
+async def _response_validation_handler(request: Request, exc: ResponseValidationError) -> JSONResponse:
+    """Return JSON (not plain text) when response_model validation fails — easier to debug clients."""
+    logger.exception("Response validation failed for %s", request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Response validation failed"},
+    )
+
+
+@app.exception_handler(Exception)
+async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Ensure unexpected errors return JSON so proxies and curl can parse the body."""
+    if isinstance(exc, StarletteHTTPException):
+        detail = exc.detail
+        if not isinstance(detail, str):
+            detail = str(detail)
+        return JSONResponse(status_code=exc.status_code, content={"detail": detail})
+    if isinstance(exc, RequestValidationError):
+        return await request_validation_exception_handler(request, exc)
+    logger.exception("Unhandled exception for %s", request.url.path)
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
 
 if __name__ == "__main__":

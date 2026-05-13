@@ -4,9 +4,11 @@ Takes an address, runs all data lookups in parallel, and returns the full ScanRe
 """
 
 import asyncio
+import logging
 from fastapi import APIRouter, HTTPException
 from models.schemas import ScanRequest, ScanResponse, MapData, ThreatCard, LogisticsCard
 from services import geocoding, city_data, places, flights, ai_analysis, flight_exposure
+from services.threat_card_layout import cards_from_specs_and_bullets, ordered_card_ids
 from services.city_data import (
     CRIME_FETCH_LIMIT,
     EVICTIONS_FETCH_LIMIT,
@@ -15,6 +17,7 @@ from services.city_data import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 NYC_BOUNDS = {
     "lat_min": 40.4774,  # SW corner (approx)
@@ -110,21 +113,42 @@ async def scan(request: ScanRequest):
     )
 
     # ── 6. Parse AI result into typed models ──────────────────────────────────
-    threat_cards = [
-        ThreatCard(
-            id=card["id"],
-            emoji=card["emoji"],
-            title=card["title"],
-            subtitle=card["subtitle"],
-            border_color=card["border_color"],
-            text_color=card["text_color"],
-            bullets=card["bullets"],
-        )
-        for card in ai_result.get("threat_cards", [])
-    ]
+    threat_cards: list[ThreatCard] = []
+    for card in ai_result.get("threat_cards") or []:
+        if not isinstance(card, dict):
+            continue
+        try:
+            bullets = card.get("bullets")
+            if not isinstance(bullets, list):
+                bullets = []
+            threat_cards.append(
+                ThreatCard(
+                    id=str(card.get("id", "")),
+                    emoji=str(card.get("emoji", "")),
+                    title=str(card.get("title", "")),
+                    subtitle=str(card.get("subtitle", "")),
+                    border_color=str(card.get("border_color", "")),
+                    text_color=str(card.get("text_color", "")),
+                    bullets=[str(b) for b in bullets],
+                )
+            )
+        except Exception:
+            logger.warning("Skipping malformed threat card", exc_info=True)
+    if not threat_cards:
+        fb_map = {cid: ["Details unavailable.", "—", "—"] for cid in ordered_card_ids()}
+        threat_cards = [ThreatCard(**c) for c in cards_from_specs_and_bullets(fb_map)]
 
-    danger_score = int(ai_result.get("danger_score", 50))
+    _ds = ai_result.get("danger_score", 50)
+    try:
+        danger_score = int(_ds) if _ds is not None else 50
+    except (TypeError, ValueError):
+        danger_score = 50
+    danger_score = max(0, min(100, danger_score))
+
+    _valid_risk = frozenset({"LOW", "MODERATE", "HIGH", "EXTREME"})
     risk_level = ai_result.get("risk_level", "MODERATE")
+    if risk_level not in _valid_risk:
+        risk_level = "MODERATE"
 
     # Risk level color label
     risk_emoji_map = {
