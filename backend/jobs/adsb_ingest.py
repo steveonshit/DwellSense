@@ -17,8 +17,11 @@ import httpx
 from services.city_data import _get_client  # reuse existing Supabase client config
 
 
-OPENSKY_USERNAME = os.getenv("OPENSKY_USERNAME", "")
-OPENSKY_PASSWORD = os.getenv("OPENSKY_PASSWORD", "")
+def _opensky_auth() -> tuple[str, str] | None:
+    """Basic auth only when username is set; read env at call time (not import time)."""
+    u = (os.getenv("OPENSKY_USERNAME") or "").strip()
+    p = (os.getenv("OPENSKY_PASSWORD") or "").strip()
+    return (u, p) if u else None
 
 
 def _bbox_for_nyc() -> tuple[float, float, float, float]:
@@ -33,9 +36,15 @@ def _bbox_for_nyc() -> tuple[float, float, float, float]:
 
 async def ingest_once(*, source: str = "opensky") -> int:
     lat_min, lat_max, lng_min, lng_max = _bbox_for_nyc()
-    auth = (OPENSKY_USERNAME, OPENSKY_PASSWORD) if OPENSKY_USERNAME else None
+    auth = _opensky_auth()
 
-    async with httpx.AsyncClient(timeout=15) as client:
+    try:
+        timeout_sec = max(10.0, min(60.0, float(os.getenv("ADSB_OPENSKY_TIMEOUT_SECONDS", "25"))))
+    except ValueError:
+        timeout_sec = 25.0
+
+    # Railway often sets HTTP(S)_PROXY; OpenSky direct TLS can fail if those are honored.
+    async with httpx.AsyncClient(timeout=timeout_sec, trust_env=False) as client:
         resp = await client.get(
             "https://opensky-network.org/api/states/all",
             params={"lamin": lat_min, "lamax": lat_max, "lomin": lng_min, "lomax": lng_max},
