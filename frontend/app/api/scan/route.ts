@@ -23,12 +23,29 @@ export async function POST(req: NextRequest) {
       signal: AbortSignal.timeout(290_000),
     });
 
-    const data = await backendRes.json();
+    const raw = await backendRes.text();
+    let data: unknown = null;
+    try {
+      data = raw ? JSON.parse(raw) : null;
+    } catch {
+      data = null;
+    }
 
     if (!backendRes.ok) {
+      const detail =
+        typeof data === "object" &&
+        data !== null &&
+        "detail" in data &&
+        (data as { detail: unknown }).detail != null
+          ? String((data as { detail: unknown }).detail)
+          : raw.trim().slice(0, 240) || "Scan failed. Please try again.";
+      return NextResponse.json({ error: detail }, { status: backendRes.status });
+    }
+
+    if (data === null) {
       return NextResponse.json(
-        { error: data.detail || "Scan failed. Please try again." },
-        { status: backendRes.status }
+        { error: "Analysis server returned invalid JSON." },
+        { status: 502 }
       );
     }
 
