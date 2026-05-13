@@ -311,6 +311,54 @@ def _decimate_indices(n: int, max_points: int) -> list[int]:
     return uniq
 
 
+def _densify_polyline(
+    coords: list[Coordinate],
+    *,
+    step_miles: float,
+    cap: int = 96,
+) -> list[Coordinate]:
+    """
+    Insert vertices along each segment so the map reads as a smooth curved path
+    (similar density to a live OpenSky track polyline), without any extra HTTP calls.
+
+    Uses short-segment linear lat/lng interpolation (fine for short legs in the NYC metro box).
+    Set ADSB_PATH_DENSIFY_STEP_MILES=0 to disable.
+    """
+    if step_miles <= 0 or len(coords) < 2:
+        return coords
+    out: list[Coordinate] = [coords[0]]
+    for i in range(1, len(coords)):
+        a, b = out[-1], coords[i]
+        dist = _haversine_miles(a.lat, a.lng, b.lat, b.lng)
+        if dist <= step_miles + 1e-6:
+            if len(out) >= cap:
+                break
+            out.append(b)
+            continue
+        room = cap - len(out)
+        if room <= 1:
+            out.append(b)
+            break
+        n = min(room, max(2, int(math.ceil(dist / step_miles))))
+        for j in range(1, n):
+            t = j / n
+            out.append(
+                Coordinate(
+                    lat=a.lat + t * (b.lat - a.lat),
+                    lng=a.lng + t * (b.lng - a.lng),
+                )
+            )
+        if len(out) >= cap:
+            break
+        out.append(b)
+    # Drop consecutive duplicates (can happen at segment joins)
+    deduped: list[Coordinate] = []
+    for c in out:
+        if not deduped or abs(c.lat - deduped[-1].lat) > 1e-9 or abs(c.lng - deduped[-1].lng) > 1e-9:
+            deduped.append(c)
+    return deduped if len(deduped) >= 2 else coords
+
+
 def get_stored_sample_flight_paths(
     coord: Coordinate,
     *,
@@ -421,6 +469,11 @@ def get_stored_sample_flight_paths(
         idxs = _decimate_indices(len(coords_full), max_points)
         coords = [coords_full[i] for i in idxs]
         alts_track = [alts_m[i] for i in idxs]
+        try:
+            densify_step = float(os.getenv("ADSB_PATH_DENSIFY_STEP_MILES", "0.28"))
+        except ValueError:
+            densify_step = 0.28
+        coords = _densify_polyline(coords, step_miles=densify_step, cap=96)
         dists = [_haversine_miles(coord.lat, coord.lng, c.lat, c.lng) for c in coords]
         min_d = min(dists) if dists else 999.0
         # Skip aircraft that never came reasonably close (reduces clutter / bogus lines)
