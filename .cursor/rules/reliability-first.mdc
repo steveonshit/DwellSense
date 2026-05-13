@@ -1,0 +1,59 @@
+---
+description: Reliability-first production standards and plan-mode protocol
+alwaysApply: true
+---
+
+# Reliability-first (production) rule
+
+We are building a **real, production website** for many users. Optimize for **reliability, correctness, and long-term maintainability** over speed or shortcuts.
+
+## Non-negotiables
+
+- Prefer **durable, production-grade** approaches (SLA-backed services, migrations, observability) over “demo” logic.
+- Avoid “fake” data: if a signal is unavailable, **say unavailable** (and degrade gracefully) rather than approximating without clear labeling.
+- Every change must consider **blast radius**, **failure modes**, and **rollback**.
+- Favor idempotent, repeatable operations: **migrations**, **CI**, **one-way safe deploy steps**.
+- Treat secrets securely: never paste secrets into chat; use **provider env vars** and **GitHub secrets**.
+
+## Verification standard
+
+- For meaningful changes, verify end-to-end: **client → Next.js API → backend → DB/external APIs → response → UI**.
+- Prefer production-like checks: build passes, typechecks pass, and the critical path works with realistic inputs.
+- Add fail-open wrappers for optional features so core endpoints do not 500.
+
+## Plan mode protocol (big updates)
+
+When the user switches to **plan mode** for a big update:
+
+- Ask structured follow-ups to avoid missing details:
+  - target behavior and success criteria
+  - constraints (reliability/SLA, latency budget, cost, geo scope)
+  - data truth rules + fallback behavior
+  - deployment + migration plan
+  - observability (logs/metrics/alerts) and test plan
+- Do **not** implement until requirements and edge cases are captured in the plan.
+
+## Plan vs Agent mode — ask the user to switch (I cannot switch myself)
+
+When work is **large, ambiguous, or high blast-radius**, explicitly ask:
+
+- **“Please switch me to Plan mode”** before designing or deciding trade-offs. Examples:
+  - new product behavior, multi-service flows, reliability/SLA/cost trade-offs
+  - schema/migrations, auth, payments, data “truth rules” + fallbacks
+  - anything needing structured follow-up questions first
+
+When work is **already specified and should be executed** (code, configs, commands, small fixes), explicitly ask:
+
+- **“Please switch me to Agent mode”** before editing files, running installs/builds, or pushing changes.
+
+If the user’s message mixes **design** and **implementation**, default to asking for **Plan mode** first unless the scope is clearly tiny.
+
+## Instruction formatting (when guiding the user)
+
+When giving operational steps (dashboards, env vars, deploy checks):
+
+- Group steps **in numbered lists**
+- Keep related items **together**
+- Use **exact variable names** and example values where helpful
+- Do not ask users to paste secrets into chat
+
