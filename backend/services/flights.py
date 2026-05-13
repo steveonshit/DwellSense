@@ -321,17 +321,19 @@ def get_stored_sample_flight_paths(
     One DB round-trip per scan — no OpenSky calls here, so no ingest-induced timeouts.
     """
     try:
-        days = max(1, min(14, int(os.getenv("ADSB_PATH_DAYS", "3"))))
+        days = max(1, min(14, int(os.getenv("ADSB_PATH_DAYS", "7"))))
     except ValueError:
-        days = 3
+        days = 7
     try:
         bbox_radius = max(5.0, min(40.0, float(os.getenv("ADSB_PATH_BBOX_MILES", "22"))))
     except ValueError:
         bbox_radius = 22.0
     try:
-        min_points = max(2, min(20, int(os.getenv("ADSB_PATH_MIN_POINTS", "4"))))
+        # Hourly ingest → most aircraft get ≤1 row per run; requiring 4+ points per ICAO
+        # almost always yields zero polylines → static corridor fallback. 2 = minimum line.
+        min_points = max(2, min(20, int(os.getenv("ADSB_PATH_MIN_POINTS", "2"))))
     except ValueError:
-        min_points = 4
+        min_points = 2
     try:
         max_points = max(8, min(80, int(os.getenv("ADSB_PATH_MAX_POINTS", "40"))))
     except ValueError:
@@ -359,7 +361,7 @@ def get_stored_sample_flight_paths(
             .lte("lat", lat_max)
             .gte("lng", lng_min)
             .lte("lng", lng_max)
-            .order("observed_at")
+            .order("observed_at", desc=True)
             .limit(row_limit)
             .execute()
         )
@@ -387,7 +389,7 @@ def get_stored_sample_flight_paths(
 
     candidates: list[tuple[float, str, list[Coordinate], list[float]]] = []
     for icao, pts in by_icao.items():
-        if len(pts) < min_points:
+        if len(pts) < 1:
             continue
         pts_sorted = sorted(pts, key=lambda x: str(x.get("observed_at") or ""))
         series: list[tuple[Coordinate, float | None]] = []
@@ -401,7 +403,16 @@ def get_stored_sample_flight_paths(
             alt_f = float(alt_m) if isinstance(alt_m, (int, float)) else None
             series.append((Coordinate(lat=la, lng=lo), alt_f))
 
-        if len(series) < min_points:
+        if len(series) < 1:
+            continue
+        raw_count = len(series)
+        # Hourly ingest: many aircraft only have one row until the next run. Map needs ≥2
+        # vertices; add a short east-west stub (~100m) so we never lie about position.
+        if raw_count == 1:
+            c, a = series[0]
+            dlng = 0.0014 / max(0.2, math.cos(math.radians(c.lat)))
+            series.append((Coordinate(lat=c.lat, lng=c.lng + dlng), a))
+        elif raw_count < min_points:
             continue
 
         coords_full = [t[0] for t in series]
@@ -416,11 +427,11 @@ def get_stored_sample_flight_paths(
         if min_d > min(bbox_radius * 0.85, 18.0):
             continue
 
-        candidates.append((min_d, icao, coords, alts_track))
+        candidates.append((min_d, icao, coords, alts_track, raw_count))
 
     candidates.sort(key=lambda x: x[0])
     out: list[FlightPath] = []
-    for min_d, icao, coords, alts_track in candidates:
+    for min_d, icao, coords, alts_track, raw_count in candidates:
         if len(coords) < 2:
             continue
         cleaned_alts = [float(a) for a in alts_track if isinstance(a, (int, float)) and float(a) > 1.0]
@@ -431,7 +442,8 @@ def get_stored_sample_flight_paths(
             median_alt_ft = int(round(med_m * 3.28084))
 
         alt_txt = f", ~{median_alt_ft} ft" if median_alt_ft is not None else ""
-        label = f"Recent ADS-B track ({icao.upper()}{alt_txt}, closest {min_d:.1f} mi)"
+        snap = " — single snapshot" if raw_count == 1 else ""
+        label = f"Recent ADS-B track ({icao.upper()}{alt_txt}, closest {min_d:.1f} mi){snap}"
         out.append(
             FlightPath(
                 start=coords[0],
