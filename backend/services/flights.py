@@ -1,7 +1,9 @@
 """
-Determines the flight path corridor above an address.
-Uses static FAA approach corridor data for NYC airports.
-Live animated plane position can be fetched from OpenSky Network.
+Determines flight geometry for /scan map_data.
+
+- Default ``FLIGHT_MODE=auto`` builds polylines from Supabase ``adsb_samples`` (filled by
+  optional ingest) so user scans do not call OpenSky. Falls back to static NYC corridors.
+- ``FLIGHT_MODE=live_adsb`` uses OpenSky with strict per-request timeouts (optional).
 """
 
 import os
@@ -10,11 +12,17 @@ import time
 import asyncio
 import httpx
 import logging
+from datetime import datetime, timedelta, timezone
+
 from models.schemas import Coordinate, FlightPath
+from services.city_data import _get_client
 
 OPENSKY_USERNAME = os.getenv("OPENSKY_USERNAME", "")
 OPENSKY_PASSWORD = os.getenv("OPENSKY_PASSWORD", "")
-FLIGHT_MODE = (os.getenv("FLIGHT_MODE", "static") or "static").strip().lower()
+# auto: Supabase adsb_samples polylines (no per-scan OpenSky), then static corridors.
+# static: corridor segments only. live_adsb: capped OpenSky track API (may still be slow/unavailable).
+# "adsb" is treated as "auto" for backward compatibility (old adsb hammered OpenSky every scan).
+FLIGHT_MODE = (os.getenv("FLIGHT_MODE", "auto") or "auto").strip().lower()
 logger = logging.getLogger(__name__)
 
 # Minimal airline mapping from common ICAO airline designators.
@@ -284,6 +292,167 @@ def _bbox_from_center(coord: Coordinate, radius_miles: float) -> tuple[float, fl
     return coord.lat - dlat, coord.lat + dlat, coord.lng - dlng, coord.lng + dlng
 
 
+def _decimate_indices(n: int, max_points: int) -> list[int]:
+    """Evenly-spaced indices preserving endpoints when n > max_points."""
+    if n <= max_points or n < 2:
+        return list(range(n))
+    step = (n - 1) / (max_points - 1)
+    out = [0]
+    for i in range(1, max_points - 1):
+        out.append(min(n - 2, int(round(i * step))))
+    out.append(n - 1)
+    # de-dupe preserving order
+    seen: set[int] = set()
+    uniq: list[int] = []
+    for i in out:
+        if i not in seen:
+            seen.add(i)
+            uniq.append(i)
+    return uniq
+
+
+def get_stored_sample_flight_paths(
+    coord: Coordinate,
+    *,
+    limit: int = 3,
+) -> list[FlightPath]:
+    """
+    Build map polylines from Supabase `adsb_samples` (same source as flight_exposure).
+    One DB round-trip per scan — no OpenSky calls here, so no ingest-induced timeouts.
+    """
+    try:
+        days = max(1, min(14, int(os.getenv("ADSB_PATH_DAYS", "3"))))
+    except ValueError:
+        days = 3
+    try:
+        bbox_radius = max(5.0, min(40.0, float(os.getenv("ADSB_PATH_BBOX_MILES", "22"))))
+    except ValueError:
+        bbox_radius = 22.0
+    try:
+        min_points = max(2, min(20, int(os.getenv("ADSB_PATH_MIN_POINTS", "4"))))
+    except ValueError:
+        min_points = 4
+    try:
+        max_points = max(8, min(80, int(os.getenv("ADSB_PATH_MAX_POINTS", "40"))))
+    except ValueError:
+        max_points = 40
+    try:
+        row_limit = max(2000, min(25000, int(os.getenv("ADSB_PATH_ROW_LIMIT", "15000"))))
+    except ValueError:
+        row_limit = 15000
+
+    try:
+        supabase = _get_client()
+    except Exception:
+        return []
+
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    since_iso = since.isoformat()
+    lat_min, lat_max, lng_min, lng_max = _bbox_from_center(coord, bbox_radius)
+
+    try:
+        res = (
+            supabase.table("adsb_samples")
+            .select("observed_at,icao24,lat,lng,baro_alt_m,geo_alt_m,on_ground")
+            .gte("observed_at", since_iso)
+            .gte("lat", lat_min)
+            .lte("lat", lat_max)
+            .gte("lng", lng_min)
+            .lte("lng", lng_max)
+            .order("observed_at")
+            .limit(row_limit)
+            .execute()
+        )
+        rows = getattr(res, "data", None) or []
+    except Exception:
+        logger.exception("stored sample flight paths: Supabase query failed")
+        return []
+
+    if not rows:
+        return []
+
+    by_icao: dict[str, list[dict]] = {}
+    for r in rows:
+        icao = str(r.get("icao24") or "").strip().lower()
+        if not icao:
+            continue
+        if r.get("on_ground") is True:
+            continue
+        try:
+            lat = float(r["lat"])
+            lng = float(r["lng"])
+        except Exception:
+            continue
+        by_icao.setdefault(icao, []).append(r)
+
+    candidates: list[tuple[float, str, list[Coordinate], list[float]]] = []
+    for icao, pts in by_icao.items():
+        if len(pts) < min_points:
+            continue
+        pts_sorted = sorted(pts, key=lambda x: str(x.get("observed_at") or ""))
+        series: list[tuple[Coordinate, float | None]] = []
+        for p in pts_sorted:
+            try:
+                la = float(p["lat"])
+                lo = float(p["lng"])
+            except Exception:
+                continue
+            alt_m = p.get("geo_alt_m") if isinstance(p.get("geo_alt_m"), (int, float)) else p.get("baro_alt_m")
+            alt_f = float(alt_m) if isinstance(alt_m, (int, float)) else None
+            series.append((Coordinate(lat=la, lng=lo), alt_f))
+
+        if len(series) < min_points:
+            continue
+
+        coords_full = [t[0] for t in series]
+        alts_m = [t[1] for t in series]
+
+        idxs = _decimate_indices(len(coords_full), max_points)
+        coords = [coords_full[i] for i in idxs]
+        alts_track = [alts_m[i] for i in idxs]
+        dists = [_haversine_miles(coord.lat, coord.lng, c.lat, c.lng) for c in coords]
+        min_d = min(dists) if dists else 999.0
+        # Skip aircraft that never came reasonably close (reduces clutter / bogus lines)
+        if min_d > min(bbox_radius * 0.85, 18.0):
+            continue
+
+        candidates.append((min_d, icao, coords, alts_track))
+
+    candidates.sort(key=lambda x: x[0])
+    out: list[FlightPath] = []
+    for min_d, icao, coords, alts_track in candidates:
+        if len(coords) < 2:
+            continue
+        cleaned_alts = [float(a) for a in alts_track if isinstance(a, (int, float)) and float(a) > 1.0]
+        median_alt_ft = None
+        if cleaned_alts:
+            cleaned_alts.sort()
+            med_m = cleaned_alts[len(cleaned_alts) // 2]
+            median_alt_ft = int(round(med_m * 3.28084))
+
+        alt_txt = f", ~{median_alt_ft} ft" if median_alt_ft is not None else ""
+        label = f"Recent ADS-B track ({icao.upper()}{alt_txt}, closest {min_d:.1f} mi)"
+        out.append(
+            FlightPath(
+                start=coords[0],
+                end=coords[-1],
+                label=label,
+                path=coords,
+                closest_miles=float(round(min_d, 2)),
+                median_altitude_ft=median_alt_ft,
+                sample_count=len(coords),
+                callsign=None,
+                airline=None,
+                flight_number=None,
+                last_seen_utc=None,
+            )
+        )
+        if len(out) >= limit:
+            break
+
+    return out
+
+
 def _fit_corridor_through_property(
     coord: Coordinate,
     points: list[tuple[float, float]],
@@ -422,20 +591,27 @@ async def get_adsb_tracks_near_property(
     limit: int = 3,
     radius_miles: float = 25.0,
     near_miles: float = 10.0,
-    max_tracks: int = 8,
+    max_tracks: int = 3,
 ) -> list[FlightPath]:
     """
-    Return up to `limit` REAL ADS-B tracks near the property.
+    Return up to `limit` REAL ADS-B tracks near the property (OpenSky live API).
 
     Strategy:
     - Pull current aircraft states in a bounding box (OpenSky `states/all`)
     - Keep aircraft reasonably close to the property (<= near_miles) and in-air
-    - For the closest N, fetch OpenSky `tracks/all` (recent trajectory) and return polylines
+    - For the closest few ICAOs, fetch OpenSky `tracks/all` **sequentially** with a short
+      per-request timeout so `/scan` does not fan out dozens of parallel calls.
     """
+    try:
+        max_tracks = max(1, min(5, int(os.getenv("OPENSKY_MAX_TRACK_FETCHES", str(max_tracks)))))
+    except ValueError:
+        max_tracks = 3
+
     lat_min, lat_max, lng_min, lng_max = _bbox_from_center(coord, radius_miles)
     auth = (OPENSKY_USERNAME, OPENSKY_PASSWORD) if OPENSKY_USERNAME else None
 
-    async with httpx.AsyncClient(timeout=10) as client:
+    timeout = httpx.Timeout(12.0, connect=6.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.get(
             "https://opensky-network.org/api/states/all",
             params={"lamin": lat_min, "lamax": lat_max, "lomin": lng_min, "lomax": lng_max},
@@ -476,7 +652,7 @@ async def get_adsb_tracks_near_property(
             return []
 
         candidates.sort(key=lambda x: x[0])
-        top = candidates[: max_tracks]
+        top = candidates[:max_tracks]
 
         now = int(time.time())
 
@@ -493,7 +669,20 @@ async def get_adsb_tracks_near_property(
             except Exception:
                 return None
 
-        tracks = await asyncio.gather(*[_fetch_track(icao) for _, icao, _ in top])
+        tracks: list[dict | None] = []
+        try:
+            per_track_timeout = max(3.0, min(12.0, float(os.getenv("OPENSKY_TRACK_TIMEOUT_SECONDS", "5"))))
+        except ValueError:
+            per_track_timeout = 5.0
+        for _, icao, _ in top:
+            try:
+                tr = await asyncio.wait_for(_fetch_track(icao), timeout=per_track_timeout)
+            except asyncio.TimeoutError:
+                logger.warning("OpenSky track fetch timed out (icao=%s)", icao)
+                tr = None
+            except Exception:
+                tr = None
+            tracks.append(tr)
 
     out: list[FlightPath] = []
     for (dist, icao24, callsign_raw), tdata in zip(top, tracks):
@@ -632,22 +821,63 @@ async def get_flight_paths(
     """
     Main entry point for scan pipeline.
 
-    - FLIGHT_MODE=adsb: build corridors from live ADS-B (OpenSky)
-    - FLIGHT_MODE=static (default): use our static NYC corridors
+    - ``auto`` (default): polylines from Supabase ``adsb_samples`` when ingest has data;
+      otherwise static NYC corridors. No OpenSky calls on this path.
+    - ``static``: simplified hand-authored corridor segments only.
+    - ``live_adsb``: capped OpenSky ``states`` + a few sequential ``tracks`` calls; falls
+      back to static if empty or slow.
+    - ``adsb`` is accepted as an alias for ``auto`` (legacy env files).
     """
-    mode = FLIGHT_MODE
+    mode = (FLIGHT_MODE or "auto").strip().lower()
     if mode == "adsb":
+        mode = "auto"
+
+    def static_paths() -> list[FlightPath]:
+        return get_nearby_flight_corridors(coord, limit=limit, max_distance_miles=3.0)
+
+    if mode == "static":
+        return static_paths()
+
+    if mode == "auto":
         try:
-            # Prefer real track polylines (truthful) over corridor inference.
-            paths = await get_adsb_tracks_near_property(coord, limit=limit)
-            if paths:
-                logger.info("ADS-B: returning %d tracks", len(paths))
-                return paths
+            paths = await asyncio.to_thread(get_stored_sample_flight_paths, coord, limit=limit)
         except Exception:
-            # fall through to static
-            pass
-        logger.info("ADS-B: falling back to static corridors")
-    return get_nearby_flight_corridors(coord, limit=limit, max_distance_miles=3.0)
+            logger.exception("stored sample flight paths failed")
+            paths = []
+        if paths:
+            logger.info("flight paths: returning %d stored-sample track(s)", len(paths))
+            return paths
+        logger.info("flight paths: no stored samples in window — static corridors")
+        return static_paths()
+
+    if mode == "live_adsb":
+        try:
+            budget = float(os.getenv("OPENSKY_SCAN_BUDGET_SECONDS", "18"))
+        except ValueError:
+            budget = 18.0
+        budget = max(8.0, min(45.0, budget))
+        try:
+            paths = await asyncio.wait_for(
+                get_adsb_tracks_near_property(coord, limit=limit),
+                timeout=budget,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("live OpenSky flight path fetch exceeded %.0fs — static fallback", budget)
+            paths = []
+        except Exception:
+            logger.exception("live OpenSky flight paths failed")
+            paths = []
+        if paths:
+            logger.info("live ADS-B: returning %d track(s)", len(paths))
+            return paths
+        return static_paths()
+
+    logger.warning("unknown FLIGHT_MODE=%s — using auto", FLIGHT_MODE)
+    try:
+        paths = await asyncio.to_thread(get_stored_sample_flight_paths, coord, limit=limit)
+    except Exception:
+        paths = []
+    return paths if paths else static_paths()
 
 
 async def get_live_plane_position(

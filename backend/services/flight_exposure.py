@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 from datetime import datetime, timedelta, timezone
 
 from models.schemas import Coordinate, FlightExposure
@@ -26,13 +27,24 @@ def compute_exposure(
     coord: Coordinate,
     *,
     days: int = 7,
-    radius_miles: float = 1.0,
+    radius_miles: float = 1.5,
     max_alt_ft: int = 10000,
 ) -> FlightExposure | None:
     """
     Prototype exposure score from stored ADS-B samples in Supabase.
     This is intentionally simple: good enough for UX iteration.
+
+    Tune without code changes: EXPOSURE_DAYS (1–30), EXPOSURE_RADIUS_MILES (0.25–10).
     """
+    try:
+        days = max(1, min(30, int(os.getenv("EXPOSURE_DAYS", str(days)))))
+    except ValueError:
+        days = 7
+    try:
+        radius_miles = max(0.25, min(10.0, float(os.getenv("EXPOSURE_RADIUS_MILES", str(radius_miles)))))
+    except ValueError:
+        radius_miles = 1.5
+
     try:
         supabase = _get_client()
     except Exception:
