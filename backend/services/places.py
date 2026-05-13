@@ -23,7 +23,7 @@ NYC_AIRPORTS = [
     {"name": "Newark Liberty (EWR)",   "lat": 40.6895, "lng": -74.1745},
 ]
 
-# NYC major malls (static)
+# Fallback only when Places returns no mall (see _get_logistics_blocking_inner).
 NYC_MALLS = [
     {"name": "Westfield World Trade Center", "lat": 40.7127, "lng": -74.0134},
     {"name": "Brookfield Place",             "lat": 40.7133, "lng": -74.0155},
@@ -206,15 +206,23 @@ def _get_logistics_blocking_inner(coord: Coordinate) -> list[LogisticsCard]:
         coordinates=Coordinate(lat=airport["lat"], lng=airport["lng"]),
     ))
 
-    # --- Nearest Mall (static math) ---
-    mall = _nearest_static(coord, NYC_MALLS)
-    dist = _haversine_miles(coord.lat, coord.lng, mall["lat"], mall["lng"])
-    val, unit = _miles_to_display(dist)
-    cards.append(LogisticsCard(
-        type="mall", name=mall["name"], category="Retail Center",
-        emoji="🛍️", distance_value=val, distance_unit=unit, color="#06b6d4",
-        coordinates=Coordinate(lat=mall["lat"], lng=mall["lng"]),
-    ))
+    # --- Nearest mall / retail hub (Places — not limited to static list below) ---
+    place = _nearby_search(api_key, coord, ["shopping_mall"], radius_m=15000)
+    if not place:
+        place = _text_search(api_key, coord, "shopping mall", radius_m=12000)
+    if place:
+        card = _make_card(place, coord, "mall", "Retail Center", "🛍️", "#06b6d4")
+        if card:
+            cards.append(card)
+    else:
+        mall = _nearest_static(coord, NYC_MALLS)
+        dist = _haversine_miles(coord.lat, coord.lng, mall["lat"], mall["lng"])
+        val, unit = _miles_to_display(dist)
+        cards.append(LogisticsCard(
+            type="mall", name=mall["name"], category="Retail Center",
+            emoji="🛍️", distance_value=val, distance_unit=unit, color="#06b6d4",
+            coordinates=Coordinate(lat=mall["lat"], lng=mall["lng"]),
+        ))
 
     logger.info(f"Logistics: returned {len(cards)} cards.")
     return cards
