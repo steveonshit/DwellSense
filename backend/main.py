@@ -36,7 +36,7 @@ async def _adsb_ingest_job() -> None:
 
     try:
         n = await adsb_ingest.ingest_once()
-        logger.info("ADS-B ingest: stored ~%s samples", n)
+        logger.info("ADS-B ingest: stored %s samples", n)
     except Exception:
         logger.exception("ADS-B ingest failed (table missing or OpenSky/Supabase error)")
 
