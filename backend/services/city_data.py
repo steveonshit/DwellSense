@@ -470,7 +470,7 @@ def _format_water_311_label(complaint_type: str, descriptor: str) -> str:
         else:
             issue = "Sewer Issue"
     elif any(k in blob for k in ["contamin", "dirty", "brown", "discolor", "quality"]):
-        issue = "Water Quality"
+        issue = "Water Quality Issue"
     elif any(k in blob for k in ["leak", "flood"]):
         issue = "Water Leak"
     elif any(k in blob for k in ["no water", "pressure", "hydrant"]):
