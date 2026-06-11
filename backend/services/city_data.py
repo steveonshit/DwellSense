@@ -462,23 +462,23 @@ def _format_water_311_label(complaint_type: str, descriptor: str) -> str:
 
     if "sewer" in blob:
         if any(k in blob for k in ["odor", "smell", "stench"]):
-            issue = "Sewer odor/smell"
+            issue = "Sewer Odor"
         elif any(k in blob for k in ["backup", "back up", "back-up", "overflow"]):
-            issue = "Sewer backup/overflow"
+            issue = "Sewer Backup"
         elif any(k in blob for k in ["clog", "block", "catch basin", "drain"]):
-            issue = "Sewer/drain blockage"
+            issue = "Drain Blockage"
         else:
-            issue = "Sewer issue"
+            issue = "Sewer Issue"
     elif any(k in blob for k in ["contamin", "dirty", "brown", "discolor", "quality"]):
-        issue = "Water quality/contamination concern"
+        issue = "Water Quality"
     elif any(k in blob for k in ["leak", "flood"]):
-        issue = "Water leak/flooding"
+        issue = "Water Leak"
     elif any(k in blob for k in ["no water", "pressure", "hydrant"]):
-        issue = "Water service/pressure issue"
+        issue = "Water Pressure"
     else:
-        issue = "Water issue"
+        issue = "Water Issue"
 
-    return f"311: {issue} - {descriptor}" if descriptor else f"311: {issue}"
+    return issue
 
 
 def _format_311_label(row: dict) -> str:
