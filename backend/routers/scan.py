@@ -70,7 +70,7 @@ async def scan(request: ScanRequest):
         logistics_task,
     )
 
-    # Tighten spatial accuracy: bbox queries are a prefilter; scoring should reflect a true ~0.5mi radius.
+    # Tighten spatial accuracy: bbox queries are a prefilter; scoring should reflect a true ~0.75mi radius.
     crime_capped = len(crime) >= CRIME_FETCH_LIMIT
     reports_capped = len(reports_311) >= REPORTS_FETCH_LIMIT
     permits_capped = len(permits) >= PERMITS_FETCH_LIMIT
