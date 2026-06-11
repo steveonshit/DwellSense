@@ -17,12 +17,12 @@ import math
 
 logger = logging.getLogger(__name__)
 
-# Bounding box prefilter for the true ~0.75 mile search radius below.
-LAT_DELTA = 0.0105
-LNG_DELTA = 0.015
+# Bounding box prefilter for the true ~1 mile search radius below.
+LAT_DELTA = 0.014
+LNG_DELTA = 0.020
 
-# True radius filter after bbox prefilter (matches "~0.75 miles" copy in UI/scoring)
-RADIUS_MILES = 0.75
+# True radius filter after bbox prefilter (matches "~1 mile" copy in UI/scoring)
+RADIUS_MILES = 1.0
 RADIUS_METERS = RADIUS_MILES * 1609.344
 
 # Intended recency windows (must match how we describe scoring/UI)
@@ -32,11 +32,11 @@ PERMIT_DAYS_BACK = 90
 EVICTION_DAYS_BACK = 180
 
 # Socrata/Supabase fetch caps (used to detect truncated samples).
-# 0.75mi radius is 2.25x the old 0.5mi area, so caps are raised to avoid premature truncation.
-CRIME_FETCH_LIMIT = 450
-REPORTS_FETCH_LIMIT = 675
-PERMITS_FETCH_LIMIT = 450
-EVICTIONS_FETCH_LIMIT = 225
+# 1mi radius is 4x the old 0.5mi area, so caps are raised to avoid premature truncation.
+CRIME_FETCH_LIMIT = 800
+REPORTS_FETCH_LIMIT = 1200
+PERMITS_FETCH_LIMIT = 800
+EVICTIONS_FETCH_LIMIT = 400
 
 # NYC Open Data (Socrata) base URL
 SOCRATA_BASE = "https://data.cityofnewyork.us/resource"

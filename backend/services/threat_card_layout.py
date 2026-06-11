@@ -166,7 +166,7 @@ def compute_risk_from_counts(
 
     risk_description = (
         f"Analysis based on {crime_count} crime reports, {reports_count} 311 calls, "
-        f"{permit_count} active permits, and {eviction_count} eviction filings within ~0.75 miles."
+        f"{permit_count} active permits, and {eviction_count} eviction filings within ~1 mile."
         + (" " + " ".join(suffix_parts) if suffix_parts else "")
     )
 

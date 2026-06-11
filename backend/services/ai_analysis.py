@@ -516,9 +516,9 @@ async def analyze(
     prompt = (
         "ADDRESS: " + address + "\n"
         f"COORD: {coord.lat:.5f},{coord.lng:.5f}\n"
-        f"CRIME_30D_0.75MI: {_summarize_crime(crime)}\n"
-        f"SR311_30D_0.75MI: {_summarize_311(reports_311)}\n"
-        f"PERMITS_90D_0.75MI: {_summarize_permits(permits)}\n"
+        f"CRIME_30D_1MI: {_summarize_crime(crime)}\n"
+        f"SR311_30D_1MI: {_summarize_311(reports_311)}\n"
+        f"PERMITS_90D_1MI: {_summarize_permits(permits)}\n"
         f"EVICTIONS_NEARBY: count={eviction_count}\n"
         f"LOGISTICS: {_summarize_logistics(logistics)}\n"
         f"FLIGHT: {flight_text}\n"
