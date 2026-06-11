@@ -8,7 +8,7 @@ interface Props {
 }
 
 export default function HeroSection({ onScan, isLoading }: Props) {
-  const [address, setAddress] = useState("Apt 4B, 350 W 42nd St, New York, NY");
+  const [address, setAddress] = useState("742 Lefferts Ave, # 5B, Brooklyn, NY 11203");
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
