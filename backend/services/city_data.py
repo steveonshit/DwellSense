@@ -437,7 +437,7 @@ def build_zones(crime: list[dict], reports_311: list[dict], permits: list[dict])
             zones.append(Zone(
                 lat=row["lat"], lng=row["lng"],
                 radius_meters=200, color=color,
-                label=row.get("complaint_type", "311 Report"),
+                label=_format_311_label(row),
             ))
 
     for row in permits[:3]:
@@ -451,8 +451,50 @@ def build_zones(crime: list[dict], reports_311: list[dict], permits: list[dict])
     return zones
 
 
-def _classify_311(complaint_type: str) -> tuple[str, str]:
+def _clean_311_text(value: object) -> str:
+    return " ".join(str(value or "").split())
+
+
+def _format_water_311_label(complaint_type: str, descriptor: str) -> str:
+    c = complaint_type.lower()
+    d = descriptor.lower()
+    blob = f"{c} {d}"
+
+    if "sewer" in blob:
+        if any(k in blob for k in ["odor", "smell", "stench"]):
+            issue = "Sewer odor/smell"
+        elif any(k in blob for k in ["backup", "back up", "back-up", "overflow"]):
+            issue = "Sewer backup/overflow"
+        elif any(k in blob for k in ["clog", "block", "catch basin", "drain"]):
+            issue = "Sewer/drain blockage"
+        else:
+            issue = "Sewer issue"
+    elif any(k in blob for k in ["contamin", "dirty", "brown", "discolor", "quality"]):
+        issue = "Water quality/contamination concern"
+    elif any(k in blob for k in ["leak", "flood"]):
+        issue = "Water leak/flooding"
+    elif any(k in blob for k in ["no water", "pressure", "hydrant"]):
+        issue = "Water service/pressure issue"
+    else:
+        issue = "Water issue"
+
+    return f"311: {issue} - {descriptor}" if descriptor else f"311: {issue}"
+
+
+def _format_311_label(row: dict) -> str:
+    complaint_type = _clean_311_text(row.get("complaint_type")) or "311 Report"
+    descriptor = _clean_311_text(row.get("descriptor"))
+    c = complaint_type.lower()
+
+    if any(k in c for k in ["water", "leak", "flood", "sewer", "drain"]):
+        return _format_water_311_label(complaint_type, descriptor)
+
+    return f"311: {complaint_type}"
+
+
+def _classify_311(row: dict) -> tuple[str, str]:
     """Returns (pin_type, label) for a 311 complaint type."""
+    complaint_type = _clean_311_text(row.get("complaint_type"))
     c = complaint_type.lower()
     if any(k in c for k in ["rodent", "rat", "mice", "pest"]):
         return "rat", f"311: {complaint_type}"
@@ -461,7 +503,7 @@ def _classify_311(complaint_type: str) -> tuple[str, str]:
     if any(k in c for k in ["heat", "hot water", "heating", "boiler"]):
         return "fire", f"311: {complaint_type}"
     if any(k in c for k in ["water", "leak", "flood", "sewer", "drain"]):
-        return "water", f"311: {complaint_type}"
+        return "water", _format_311_label(row)
     if any(k in c for k in ["garbage", "sanitation", "litter", "trash", "waste", "dirty"]):
         return "trash", f"311: {complaint_type}"
     if any(k in c for k in ["graffiti", "paint", "vandal"]):
@@ -493,7 +535,7 @@ def build_swarm(crime: list[dict], reports_311: list[dict], permits: list[dict])
     for row in reports_311:
         if not row.get("lat") or not row.get("lng"):
             continue
-        pin_type, label = _classify_311(row.get("complaint_type", ""))
+        pin_type, label = _classify_311(row)
         if type_counts.get(pin_type, 0) >= 15:
             continue
         type_counts[pin_type] = type_counts.get(pin_type, 0) + 1
