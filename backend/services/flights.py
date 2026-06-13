@@ -785,9 +785,19 @@ def get_stored_sample_flight_paths(
                 times = [times[i] for i in idxs]
                 alts_track = [alts_track[i] for i in idxs]
 
+            if len(coords) < min_points and len(coords_full) >= min_points:
+                coords = list(coords_full)
+                times = list(times_full)
+                alts_track = list(alts_m)
+                if len(coords) > max_points:
+                    idxs = _decimate_indices(len(coords), max_points)
+                    coords = [coords[i] for i in idxs]
+                    times = [times[i] for i in idxs]
+                    alts_track = [alts_track[i] for i in idxs]
+
             coords = _smooth_coords_3tap(coords, smooth_passes)
 
-            if len(coords) < 2:
+            if len(coords) < min_points:
                 continue
 
             dists = [_haversine_miles(coord.lat, coord.lng, c.lat, c.lng) for c in coords]
