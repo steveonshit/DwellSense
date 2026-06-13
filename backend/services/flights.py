@@ -701,14 +701,9 @@ def get_stored_sample_flight_paths(
         for seg in segments:
             raw_count_seg = len(seg)
             if raw_count_seg < min_points:
-                if not (raw_count_seg == 1 and min_points <= 2):
-                    continue
+                continue
 
             work = list(seg)
-            if raw_count_seg == 1:
-                c0, t0, a0 = work[0]
-                dlng = 0.0014 / max(0.2, math.cos(math.radians(c0.lat)))
-                work.append((Coordinate(lat=c0.lat, lng=c0.lng + dlng), t0, a0))
 
             coords_full = [s[0] for s in work]
             times_full = [s[1] for s in work]
