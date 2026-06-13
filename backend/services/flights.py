@@ -560,6 +560,14 @@ def get_stored_sample_flight_paths(
     except ValueError:
         days = 7
     try:
+        stability_bucket_minutes = max(5, min(1440, int(os.getenv("ADSB_PATH_STABILITY_BUCKET_MINUTES", "60"))))
+    except ValueError:
+        stability_bucket_minutes = 60
+    try:
+        stability_lag_minutes = max(0, min(1440, int(os.getenv("ADSB_PATH_STABILITY_LAG_MINUTES", "0"))))
+    except ValueError:
+        stability_lag_minutes = 0
+    try:
         bbox_radius = max(5.0, min(40.0, float(os.getenv("ADSB_PATH_BBOX_MILES", "22"))))
     except ValueError:
         bbox_radius = 22.0
@@ -621,8 +629,13 @@ def get_stored_sample_flight_paths(
     except Exception:
         return []
 
-    since = datetime.now(timezone.utc) - timedelta(days=days)
+    now = datetime.now(timezone.utc) - timedelta(minutes=stability_lag_minutes)
+    bucket_seconds = stability_bucket_minutes * 60
+    stable_until_ts = int(now.timestamp()) // bucket_seconds * bucket_seconds
+    stable_until = datetime.fromtimestamp(stable_until_ts, timezone.utc)
+    since = stable_until - timedelta(days=days)
     since_iso = since.isoformat()
+    until_iso = stable_until.isoformat()
     lat_min, lat_max, lng_min, lng_max = _bbox_from_center(coord, bbox_radius)
 
     try:
@@ -630,6 +643,7 @@ def get_stored_sample_flight_paths(
             supabase.table("adsb_samples")
             .select("observed_at,icao24,lat,lng,baro_alt_m,geo_alt_m,on_ground")
             .gte("observed_at", since_iso)
+            .lt("observed_at", until_iso)
             .gte("lat", lat_min)
             .lte("lat", lat_max)
             .gte("lng", lng_min)
@@ -798,7 +812,7 @@ def get_stored_sample_flight_paths(
         if best_for_icao is not None:
             candidates.append(best_for_icao)
 
-    candidates.sort(key=lambda x: x[0])
+    candidates.sort(key=lambda x: (round(x[0], 3), -x[4], x[1]))
     out: list[FlightPath] = []
     for min_d, icao, coords, alts_track, raw_count in candidates:
         if len(coords) < 2:
