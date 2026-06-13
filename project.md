@@ -11,7 +11,7 @@ This document describes the **DwellSense** codebase, architecture, deployment, a
 - Geocodes the address (Mapbox)
 - Pulls nearby **crime**, **311**, **permits**, and **evictions** from **Supabase** (pre-loaded via a daily job)
 - Fetches **transit / grocery / retail** proximity via **Google Places API (New)**
-- Computes **flight overlays** (static corridors or live ADS‑B tracks) and a **prototype flight exposure summary** (`flight_exposure`) when ingestion data exists
+- Computes **flight overlays** (`FLIGHT_MODE`: **`auto`** prefers Supabase `adsb_samples` polylines, else static corridors; **`static`** corridors only; **`live_adsb`** optional OpenSky per scan) and a **prototype flight exposure summary** (`flight_exposure`) when ingestion data exists
 - Builds a **Wellness Score** (0–100, where **100 is best**), **risk labels**, and **threat-card chrome** (titles, colors, emojis) in **Python**; **Google Gemini** writes only the **27 bullet strings** (three per card) from the same data brief
 - Renders results on a **Mapbox** map and carousels
 
@@ -25,6 +25,7 @@ Tagline: *Don’t sign a blind lease.*
 DwellSense/
 ├── backend/              # Python FastAPI API (includes services/threat_card_layout.py)
 ├── frontend/             # Next.js 15 + Tailwind + Mapbox GL
+│   └── lib/flightPathDisplay.ts  # Display-only flight line shaping (great-circle arcs + smoothing)
 ├── Dwellsense Final.html # Standalone HTML demo (Leaflet) — not the production app
 ├── README.md             # Setup: Supabase SQL, env vars, local run
 └── project.md            # This file — architecture, deploy, history, roadmap
@@ -43,19 +44,164 @@ DwellSense/
 | Maps / geo | Mapbox (geocoding + map), Google Places API (New), Distance Matrix (if used) |
 | Hosting | **Vercel** (frontend), **Railway** (backend) |
 
+### Tech stack in plain English
+
+- **Next.js + React** is the website layer. It renders the landing page, address form, loading ad, score banner, logistics carousel, threat cards, map, pins, and flight visuals.
+- **Vercel** hosts the frontend and runs the small **Next.js API route** at `frontend/app/api/scan/route.ts`. That route is intentionally a server-side proxy so the browser does not need to know backend secrets or private URLs.
+- **Python + FastAPI** is the backend analysis engine. The main scan endpoint is `POST /scan` in `backend/routers/scan.py`.
+- **Railway** hosts the FastAPI backend. Railway owns the runtime for backend environment variables such as `MAPBOX_TOKEN`, `GOOGLE_MAPS_API_KEY`, `GEMINI_API_KEY`, `SUPABASE_URL`, and `SUPABASE_SERVICE_KEY`.
+- **Supabase Postgres** is the data store for preloaded municipal and ADS-B data. The app reads recent crime, 311, permits, evictions, and optional flight samples from Supabase.
+- **Mapbox** has two roles:
+  - server-side geocoding in the backend (`MAPBOX_TOKEN`) turns an address into lat/lng;
+  - client-side map rendering in the frontend (`NEXT_PUBLIC_MAPBOX_TOKEN`) displays the interactive Mapbox map.
+- **Google Places API (New)** fills the logistics cards: nearby transit, grocery, retail/mall, airport-related proximity, and similar renter-relevant places.
+- **Google Gemini** is not the scoring engine. Gemini writes only the user-facing bullet summaries for the threat cards. The Wellness Score, risk level, labels, card IDs, card colors, titles, and fallback logic are deterministic Python.
+- **APScheduler** runs background jobs inside the backend process: the daily municipal data refresh and, optionally, periodic ADS-B ingestion when `ADSB_INGEST_ENABLED=true`.
+
+### One-minute presentation script (tech stack)
+
+Use this when explaining the system in a 3–5 minute presentation:
+
+> DwellSense is a full-stack web app. The user-facing site is built with Next.js, React, Tailwind, and Mapbox GL, and it is hosted on Vercel. When someone enters an address, the browser calls a Next.js API route, which securely forwards the request to our Python FastAPI backend running on Railway. The backend does the real analysis: it geocodes the address with Mapbox, pulls nearby NYC data from Supabase, calls Google Places for nearby transit and grocery access, computes the Wellness Score in Python, and uses Gemini only to write short readable bullet summaries. Then the backend returns structured JSON, and the frontend turns that response into the score, cards, carousels, map pins, and flight-path visuals.
+
+### Short memorization version
+
+- **Frontend:** Next.js + React on Vercel.
+- **Backend:** Python FastAPI on Railway.
+- **Data:** Supabase for NYC records and ADS-B samples.
+- **Map/geocoding:** Mapbox.
+- **Nearby places:** Google Places.
+- **AI:** Gemini for text bullets only.
+- **Scoring:** deterministic Python, not AI guessing.
+
 ---
 
 ## Request Flow (Production)
 
+### High-level flow
+
 1. User submits an address on **Vercel** (e.g. `dwellsense.vercel.app`).
 2. Browser calls **`POST /api/scan`** on the Next.js app (keeps `BACKEND_URL` server-side).
 3. Next.js proxies to **`POST {BACKEND_URL}/scan`** on Railway with a **~290s** upstream timeout; the route declares **`maxDuration = 300`** seconds.
-4. Backend runs geocoding, parallel DB + Places calls, flight math, then **Gemini** (bullets only — often the slowest step).
+4. Backend runs geocoding, parallel DB + Places calls, flight math, deterministic scoring, then **Gemini** (bullets only — often the slowest step).
 5. JSON response drives the UI (map, logistics carousel, threat cards).
 
-**Scan response extras (current local build):**
+### Detailed address → result lifecycle
 
-- `map_data.flight_paths` / `map_data.flight_path` — flight overlays (static corridors or live tracks)
+1. **User types an address**
+   - File: `frontend/components/HeroSection.tsx`
+   - Example input: `Apt 4B, 350 W 42nd St, New York, NY`
+   - The landing page sends the trimmed address to the client-side scan handler in `frontend/app/page.tsx`.
+
+2. **Browser calls the Next.js API route**
+   - File: `frontend/app/page.tsx`
+   - Request: `POST /api/scan`
+   - Body: `{ "address": "..." }`
+   - Timeout: `AbortSignal.timeout(295_000)` so the browser does not hang forever.
+
+3. **Next.js acts as a secure proxy**
+   - File: `frontend/app/api/scan/route.ts`
+   - Reads `BACKEND_URL` from server-side environment variables.
+   - Forwards the request to `POST {BACKEND_URL}/scan`.
+   - Uses `AbortSignal.timeout(290_000)` and `maxDuration = 300` so long scans can finish.
+   - If the backend returns an error, it tries to return clean JSON like `{ "error": "..." }` to the browser.
+
+4. **FastAPI receives the scan**
+   - File: `backend/routers/scan.py`
+   - Model: `ScanRequest`
+   - Rejects empty addresses early.
+
+5. **Backend geocodes the address**
+   - File: `backend/services/geocoding.py`
+   - Service: Mapbox Geocoding API.
+   - Output: normalized formatted address + `Coordinate(lat, lng)`.
+   - Reliability behavior: `httpx.AsyncClient`, `trust_env=False`, separate connect/read timeouts, and retries on transient network failures.
+
+6. **Backend enforces NYC-only scope**
+   - File: `backend/routers/scan.py`
+   - Checks the coordinate against `NYC_BOUNDS`.
+   - If outside bounds, returns `400` with **“Out of reach — NYC addresses only.”**
+
+7. **Backend fetches data in parallel**
+   - File: `backend/routers/scan.py`
+   - Runs these concurrently with `asyncio.gather(...)`:
+     - `city_data.get_nearby_crime(coord)`
+     - `city_data.get_nearby_311(coord)`
+     - `city_data.get_nearby_permits(coord)`
+     - `city_data.get_nearby_evictions(coord)`
+     - `places.get_logistics(coord)`
+
+8. **Supabase municipal rows are filtered to a true radius**
+   - File: `backend/services/city_data.py`
+   - Supabase queries use a fast lat/lng bounding-box prefilter.
+   - Returned rows are filtered with Haversine distance to keep only records inside the intended ~1 mile radius.
+
+9. **Noisy 311 categories are filtered**
+   - File: `backend/services/city_data.py`
+   - Parking / vehicle / traffic-enforcement style 311 noise is excluded from scoring, pins, zones, and Gemini summaries.
+   - Reason: high illegal-parking volume is not a reliable renter safety or lease-quality signal.
+
+10. **Backend builds map data**
+    - File: `backend/routers/scan.py`
+    - `city_data.build_zones(...)` creates map heat zones.
+    - `city_data.build_swarm(...)` creates individual emoji-style map pins.
+    - 311 sewer / water map labels use the NYC `descriptor` field when available, but visible names stay short: **Sewer Odor**, **Sewer Backup**, **Drain Blockage**, **Water Quality Issue**, **Water Leak**, or **Water Pressure**.
+    - `flights.get_flight_paths(...)` creates flight overlays.
+    - Result is packed into `MapData`.
+
+11. **Backend computes flight paths**
+    - File: `backend/services/flights.py`
+    - `FLIGHT_MODE=auto`: use stored Supabase `adsb_samples` polylines when available; otherwise fall back to static NYC corridor hints.
+    - `FLIGHT_MODE=static`: return only simplified corridor segments.
+    - `FLIGHT_MODE=live_adsb`: optionally call OpenSky during the scan, with strict budgets and static fallback.
+
+12. **Backend computes optional flight exposure**
+    - File: `backend/services/flight_exposure.py`
+    - Uses the same `adsb_samples` table to estimate night overflights per hour, day overflights per hour, typical altitude, and data quality.
+    - Fail-open rule: if Supabase or ingestion data is unavailable, return `data_quality="unavailable"` instead of crashing `/scan`.
+
+13. **Backend calculates Wellness Score and risk labels**
+    - File: `backend/services/threat_card_layout.py`
+    - Score is deterministic Python.
+    - The API field is still named `danger_score`, but the meaning is **Wellness Score**: `100` = best, `0` = worst.
+
+14. **Backend prepares threat-card chrome**
+    - File: `backend/services/threat_card_layout.py`
+    - Python controls card IDs, emoji, titles, subtitles, colors, risk levels, and fallback structure.
+    - This keeps the product UI stable even if Gemini is slow or unavailable.
+
+15. **Gemini writes bullet text only**
+    - File: `backend/services/ai_analysis.py`
+    - Gemini receives the same data brief and returns JSON shaped like `{ "bullets": { "card_id": ["...", "...", "..."] } }`.
+    - Gemini does not decide the score, risk level, card order, card colors, or map data.
+    - If Gemini is missing, slow, blocked, or returns bad JSON, Python merges in fallback bullets and the scan still returns.
+
+16. **Backend returns one structured JSON response**
+    - Model: `ScanResponse` in `backend/models/schemas.py`
+    - Includes `formatted_address`, `coordinates`, Wellness Score, risk labels, logistics, threat cards, map data, flight exposure, and Gemini debug fields.
+
+17. **Frontend waits for scan + loading ad**
+    - Files: `frontend/app/page.tsx`, `frontend/components/LoadingAd.tsx`
+    - The loading ad completes only when both conditions are true: the 5-second timer finished and the scan response is ready.
+
+18. **Frontend renders the result**
+    - File: `frontend/components/ResultsDashboard.tsx`
+    - Components: `DangerBanner`, `LogisticsCarousel`, `MapComponent`, `ThreatCarousel`, `SideAds`.
+    - The frontend does not recompute the score. It displays the backend response.
+
+19. **Mapbox renders the interactive map**
+    - File: `frontend/components/MapComponent.tsx`
+    - Displays the NYC-locked viewport, target marker, zones, swarm pins, logistics markers, flight routes, and flight activity chips.
+    - The map is client-side and uses `NEXT_PUBLIC_MAPBOX_TOKEN`.
+
+20. **Flight lines are display-shaped on the client**
+    - File: `frontend/lib/flightPathDisplay.ts`
+    - This is visual-only shaping. It does not change backend truth data.
+    - The display pipeline can densify long segments with great-circle interpolation, round corners, apply centripetal Catmull–Rom sampling, and keep plane animation on the same visible route coordinates.
+
+**Scan response extras:**
+
+- `map_data.flight_paths` / `map_data.flight_path` — flight overlays (see **Flights** section: `auto` vs `static` vs `live_adsb`)
 - `flight_exposure` — prototype “exposure summary” (may be `unavailable` if Supabase ingestion isn’t running)
 
 **Loading ad (UX):** `frontend/components/LoadingAd.tsx` runs a **5-second** countdown. The ad only completes when **both** the timer hits zero **and** the scan request has finished (`isApiReady`). If the scan takes longer than 5s, the user waits past the ad until data arrives. If they skip the ad early, they still wait until the API returns.
@@ -63,6 +209,8 @@ DwellSense/
 **Client:** `frontend/app/page.tsx` uses `AbortSignal.timeout(295_000)` on the fetch to `/api/scan` so the UI does not hang forever.
 
 **Health check:** `GET /health` on the backend returns `{"status":"ok","service":"DwellSense API"}`.
+
+**API errors:** `backend/main.py` registers handlers so many unhandled failures return **JSON** (e.g. `{"detail": ...}`) instead of plain-text stack traces — easier for the Next.js proxy and browser clients to parse.
 
 ---
 
@@ -97,17 +245,23 @@ If you tighten or widen NYC coverage, update **both** `NYC_BOUNDS` and `NYC_MAX_
 
 ## Geocoding (Mapbox) — reliability note
 
-Geocoding uses Mapbox via `backend/services/geocoding.py`.
+Geocoding uses Mapbox **Geocoding API** (`mapbox.places`) via `backend/services/geocoding.py`.
 
-**Local/proxy pitfall:** if the machine has `HTTP_PROXY` / `HTTPS_PROXY` set, `requests` may try to tunnel through a proxy and fail with `403` / tunnel errors when calling Mapbox.
+**Implementation (current):**
 
-**Fix implemented:** geocoding uses a `requests.Session()` with `trust_env = False` so Mapbox calls prefer a **direct connection**, and the address is **URL-encoded** safely.
+- **`httpx.AsyncClient`** with **`trust_env=False`** so `HTTP_PROXY` / `HTTPS_PROXY` (common on PaaS and dev laptops) do not hijack outbound TLS to `api.mapbox.com`.
+- **Retries:** up to **`MAPBOX_GEOCODE_RETRIES`** attempts (default **4**) with short backoff on **`ConnectTimeout`**, **`ReadTimeout`**, **`ConnectError`**, **`ReadError`**, and on HTTP **429 / 502 / 503 / 504**.
+- **Timeouts:** separate connect vs read — **`MAPBOX_GEOCODE_CONNECT_TIMEOUT`** (default **20**s), **`MAPBOX_GEOCODE_READ_TIMEOUT`** (default **35**s), each clamped to sane bounds in code.
+- **URL encoding:** the free-text address is passed as a path segment with `urllib.parse.quote(..., safe="")`.
+- **Errors:** persistent failure after retries surfaces as **`RuntimeError`** with copy that points to token, egress to `api.mapbox.com:443`, and “try again” (distinct from **`ValueError`** when Mapbox returns 200 but no matching feature).
+
+**Operational note (Railway):** intermittent **`ConnectTimeoutError`** to Mapbox is usually **transient network** or **cold path** from the region; retries often clear it. To prove egress from the **same container** as production, use **`railway ssh`** into the backend service and run `curl` or a one-line `urllib.request` to `https://api.mapbox.com/` (see **Railway CLI** under Deployment). **`railway run`** executes on your **laptop** with Railway env injected — it does **not** test Railway’s outbound network.
 
 ---
 
 ## What “Nearby” Means (Data Windows + Radius)
 
-This app intentionally uses **recent** municipal signals and a **true ~0.5 mile radius**.
+This app intentionally uses **recent** municipal signals and a **true ~1 mile radius**.
 
 ### Time windows (intended behavior)
 
@@ -120,7 +274,7 @@ These windows are applied in **both** the Supabase query path and the NYC Open D
 
 ### Radius (important)
 
-Supabase queries are done as a fast **bounding-box prefilter** (lat/lng rectangle). After results are returned, rows are filtered by **Haversine distance** to keep only points within a true **0.5 mile** circle.
+Supabase queries are done as a fast **bounding-box prefilter** (lat/lng rectangle). After results are returned, rows are filtered by **Haversine distance** to keep only points within a true **1 mile** circle.
 
 ### 311 noise filtering (NYC reality)
 
@@ -132,6 +286,22 @@ NYC 311 is extremely noisy. DwellSense excludes **parking / vehicle / traffic en
 
 Rationale: illegal parking volume is not a meaningful renter safety / lease-quality signal.
 
+### 311 sewer / water label specificity
+
+Water-related 311 complaints are still categorized as the `water` pin type for map styling, but the visible label is more specific when the NYC record includes a useful `descriptor`. Labels should stay **2-3 words max**.
+
+Current label rules in `backend/services/city_data.py`:
+
+- **Sewer Odor** when the complaint or descriptor mentions sewer plus odor / smell / stench.
+- **Sewer Backup** when it mentions sewer plus backup / back-up / overflow.
+- **Drain Blockage** when it mentions sewer, drain, catch basin, clog, or blockage.
+- **Water Quality Issue** when it mentions contamination, dirty / brown / discolored water, or water quality.
+- **Water Leak** when it mentions leak or flooding.
+- **Water Pressure** when it mentions no water, pressure, or hydrant.
+- **Water Issue** / **Sewer Issue** as honest fallbacks when the record is water/sewer-related but does not say the exact problem clearly.
+
+This is a labeling improvement only. It does not invent hazards: labels are derived from `complaint_type` + `descriptor` in the NYC 311 row. The descriptor is used to classify the issue, but it is not appended to the visible map label.
+
 ---
 
 ## Environment Variables
@@ -140,8 +310,11 @@ Rationale: illegal parking volume is not a meaningful renter safety / lease-qual
 
 | Variable | Purpose |
 |----------|---------|
-| `MAPBOX_TOKEN` | Geocoding |
-| `GOOGLE_MAPS_API_KEY` | Places API (New) — transit, grocery, Target, etc. **Must be a real key, not a placeholder.** |
+| `MAPBOX_TOKEN` | **Server-side** Mapbox token for **geocoding** (`/scan` address → lat/lng). Distinct from `NEXT_PUBLIC_MAPBOX_TOKEN` on the frontend. |
+| `MAPBOX_GEOCODE_RETRIES` | Optional. Integer **1–8**, default **4**. Retries Mapbox on timeouts / connection errors / retryable HTTP codes. |
+| `MAPBOX_GEOCODE_CONNECT_TIMEOUT` | Optional. Seconds (clamped in code), default **20**. TLS/TCP connect budget to `api.mapbox.com`. |
+| `MAPBOX_GEOCODE_READ_TIMEOUT` | Optional. Seconds (clamped in code), default **35**. Read budget after connect. |
+| `GOOGLE_MAPS_API_KEY` | Places API (New) — transit, grocery, Target, **shopping_mall** (nearest mall), etc. **Must be a real key, not a placeholder.** |
 | `GEMINI_API_KEY` | AI threat analysis |
 | `GEMINI_MODEL` | Optional. Gemini model name used for bullets. Defaults to **`gemini-2.5-flash`**. |
 | `GEMINI_MAX_OUTPUT_TOKENS` | Optional. Output token budget for Gemini JSON. Defaults to **4096**. Too-low values can truncate JSON and cause parse failures. |
@@ -152,9 +325,35 @@ Rationale: illegal parking volume is not a meaningful renter safety / lease-qual
 | `PORT` | Railway sets this automatically |
 | `OPENSKY_USERNAME` | Optional. OpenSky username (higher rate limits for ADS‑B). |
 | `OPENSKY_PASSWORD` | Optional. OpenSky password. |
-| `FLIGHT_MODE` | Optional. `static` (default) or `adsb` for live ADS‑B tracks. |
+| `FLIGHT_MODE` | **`auto`** (default): Supabase `adsb_samples` polylines when ingest has data in the query window; else static NYC corridors. **No OpenSky during `/scan` on the happy path.** **`static`:** corridors only (original “demo” dashed segments). **`live_adsb`:** capped OpenSky `states` + sequential `tracks` per scan (optional; can be slow). Legacy alias **`adsb`** is normalized to **`auto`**. See `backend/services/flights.py`. |
+| `ADSB_PATH_DAYS` | Optional. **1–14**, default **7**. How far back stored samples are queried for polylines. |
+| `ADSB_PATH_BBOX_MILES` | Optional. **5–40**, default **22**. Bounding box half-extent around the property for the Supabase filter. |
+| `ADSB_PATH_MIN_POINTS` | Optional. **2–20**, default **2**. Minimum raw samples per ICAO to include a track (singles can be stubbed to a short segment when `min_points <= 2`). |
+| `ADSB_PATH_MAX_POINTS` | Optional. **8–80**, default **40**. Even decimation cap per aircraft before cleanup. |
+| `ADSB_PATH_ROW_LIMIT` | Optional. **2000–25000**, default **15000**. Max rows returned from `adsb_samples` for one scan’s query. |
+| `ADSB_PATH_MAX_GAP_MINUTES` | Optional. **20–720**, default **120**. Splits a stored ADS-B series when consecutive samples are too far apart in time, preventing separate flights with the same ICAO from being stitched into one line. |
+| `ADSB_PATH_BLIND_JUMP_MILES` | Optional. **0–200**, default **0**. When timestamps are missing, split a stored path if consecutive points jump farther than this many miles. `0` disables this missing-timestamp split. |
+| `ADSB_PATH_KEEP_NEAR_MILES` | Optional. **5–40**, default **18**. Keeps one contiguous pass near the scan address instead of drawing a long unrelated track segment. |
+| `ADSB_PATH_KEEP_PAD_POINTS` | Optional. **0–30**, default **6**. Adds context points before/after the near-property pass so tracks do not look abruptly clipped. |
+| `ADSB_PATH_SPIKE_MIN_TURN_DEG` | Optional. **90–175**, default **148**. Sharp-turn threshold for dropping tiny local zig-zag spikes from noisy ADS-B samples. |
+| `ADSB_PATH_SPIKE_MAX_LEG_MI` | Optional. **0–1**, default **0.22**. Only drop sharp turns when both nearby legs are short enough to look like local jitter. `0` disables spike removal. |
+| `ADSB_PATH_DEDUPE_MIN_SEP_MI` | Optional. **0–0.5**, default **0.045**. Drop consecutive vertices closer than this (miles). |
+| `ADSB_PATH_MAX_IMPLIED_MPH` | Optional. **200–900**, default **620**. Drop vertices that imply impossible speed vs timestamps. |
+| `ADSB_PATH_DP_EPSILON_MILES` | Optional. **0–3**, default **0.52**. Douglas–Peucker simplification tolerance (miles); reduces zigzag. **`0`** disables DP. |
+| `ADSB_PATH_SMOOTH_PASSES` | Optional. **0–4**, default **2**. Light 3-tap moving average on interior vertices after DP. **`0`** disables. |
+| `OPENSKY_MAX_TRACK_FETCHES` | Optional. **1–5**, default **3**. `live_adsb`: how many closest ICAOs get `tracks/all` fetches. |
+| `OPENSKY_TRACK_TIMEOUT_SECONDS` | Optional. **3–12**, default **5**. Per-track fetch budget. |
+| `OPENSKY_SCAN_BUDGET_SECONDS` | Optional. **8–45**, default **18**. Total `asyncio.wait_for` budget around live OpenSky path building for one scan. |
 | `ADSB_INGEST_ENABLED` | Optional. `true` to run OpenSky → `adsb_samples` on a timer inside the API process (requires SQL table). Default off. |
 | `ADSB_INGEST_INTERVAL_SECONDS` | Optional. Ingest cadence when enabled (default **3600** = 1 hour, minimum **60**). |
+| `ADSB_OPENSKY_TIMEOUT_SECONDS` | Optional. HTTP timeout for the **ingest** client only (see `backend/.env.example`). |
+
+**Exposure tuning** (same `adsb_samples` table; see `backend/services/flight_exposure.py` and `backend/.env.example`):
+
+| Variable | Purpose |
+|----------|---------|
+| `EXPOSURE_DAYS` | Optional. **1–30**, default **7** in `compute_exposure`. Lookback for exposure stats. |
+| `EXPOSURE_RADIUS_MILES` | Optional. **0.25–10**, default **1.5** mi. Count samples within this radius of the property. |
 
 ### Frontend (Vercel / local)
 
@@ -162,6 +361,13 @@ Rationale: illegal parking volume is not a meaningful renter safety / lease-qual
 |----------|---------|
 | `NEXT_PUBLIC_MAPBOX_TOKEN` | Mapbox map (public by design) |
 | `BACKEND_URL` | Railway backend URL (e.g. `https://dwellsense-production.up.railway.app`) |
+| `NEXT_PUBLIC_FLIGHT_PATH_GREAT_CIRCLE` | Optional. Default **`1`**. Display-only: densifies line segments along great-circle arcs so long 2-point routes do not render as screen-straight chords. |
+| `NEXT_PUBLIC_FLIGHT_PATH_GC_MIN_STEPS` | Optional. Default **8**. Minimum great-circle interpolation points per route leg. |
+| `NEXT_PUBLIC_FLIGHT_PATH_GC_MAX_STEPS` | Optional. Default **24**. Maximum great-circle interpolation points per route leg. |
+| `NEXT_PUBLIC_FLIGHT_PATH_GC_MAX_VERTICES` | Optional. Default **380**. Vertex cap before final display smoothing. |
+| `NEXT_PUBLIC_FLIGHT_PATH_CHAIKIN_PASSES` | Optional. Default **2**. Display-only corner rounding passes before spline sampling. |
+| `NEXT_PUBLIC_FLIGHT_PATH_SPLINE_SEGMENTS` | Optional. **0** = polyline-only after great-circle densification. Default **14** = display-only centripetal Catmull–Rom subdivisions per span in `frontend/lib/flightPathDisplay.ts` (does not change API geometry). |
+| `NEXT_PUBLIC_FLIGHT_PATH_SPLINE_ALPHA` | Optional. Default **0.5**. Catmull–Rom alpha; `0.5` is centripetal and avoids many overshoot artifacts, `1` is chordal and hugs the source path more tightly. |
 
 **Local dev gotcha:** for local testing, set `BACKEND_URL=http://127.0.0.1:8000`. If `BACKEND_URL` points at Railway, your local frontend will keep using production and you won’t see local backend changes.
 
@@ -180,6 +386,8 @@ Rationale: illegal parking volume is not a meaningful renter safety / lease-qual
 - **Root directory:** `backend` (required — whole-repo builds fail without this).
 - **Public URL:** generated under **Networking → Generate Domain**.
 - **Auto-deploy:** on push to `main` (typical GitHub integration).
+
+**Railway CLI (optional debugging):** install the [Railway CLI](https://docs.railway.com/guides/cli), `railway login`, `railway link` in the repo, then **`railway ssh`** into the **backend** service to run commands **inside the deployed container** (same egress as `/scan`). Use **`railway logs`** to tail logs. **`railway run`** runs a command **on your laptop** with Railway env vars — useful for local scripts, **not** for proving Railway→Mapbox connectivity.
 
 ### Vercel (frontend)
 
@@ -208,7 +416,7 @@ For the “flight exposure score” prototype, we also added:
 
 This table stores ADS‑B position samples so we can compute **night vs day overflight rates**, **typical altitude**, and a **data quality** badge over time.
 
-**Important:** `adsb_samples` is **not** populated by `daily_refresh.py`. Rows are written by **`backend/jobs/adsb_ingest.py`** — either run **`python -m jobs.adsb_ingest`** manually, or enable **`ADSB_INGEST_ENABLED=true`** in production so **`main.py`** schedules the same ingest on the API service.
+**Important:** `adsb_samples` is **not** populated by `daily_refresh.py`. Rows are written by **`backend/jobs/adsb_ingest.py`** — either run **`python -m jobs.adsb_ingest`** manually, or enable **`ADSB_INGEST_ENABLED=true`** in production so **`main.py`** schedules the same ingest on the API service. The ingest HTTP client uses **`trust_env=False`** toward OpenSky to avoid proxy-related TLS failures in hosted environments.
 
 ---
 
@@ -222,7 +430,7 @@ This table stores ADS‑B position samples so we can compute **night vs day over
 | Threat card layout + deterministic risk | `backend/services/threat_card_layout.py` |
 | Gemini (bullets only) + merge / fallback | `backend/services/ai_analysis.py` |
 | Places / logistics cards | `backend/services/places.py` |
-| City data + swarm pins | `backend/services/city_data.py` |
+| City data + swarm pins + 311 label formatting | `backend/services/city_data.py` |
 | Flights / overhead aircraft | `backend/services/flights.py` |
 | ADS‑B ingestion loop | `backend/jobs/adsb_ingest.py` |
 | Flight exposure scoring | `backend/services/flight_exposure.py` |
@@ -232,6 +440,7 @@ This table stores ADS‑B position samples so we can compute **night vs day over
 | Results UI | `frontend/components/ResultsDashboard.tsx` |
 | Shared TS types | `frontend/lib/types.ts` |
 | Map + markers | `frontend/components/MapComponent.tsx` |
+| Flight line display shaping (great-circle arcs + smoothing, map-only) | `frontend/lib/flightPathDisplay.ts` |
 | Logistics carousel | `frontend/components/LogisticsCarousel.tsx` |
 
 ---
@@ -301,8 +510,8 @@ Some queries are intentionally capped (e.g. dense Manhattan can hit limits). Whe
 
 ## Working Style (Production Standard)
 
-- **Reliability first**: treat this as a production system; avoid shortcuts and “demo” behavior.
-- **No fake outputs**: if a data source is unavailable, surface **unavailable** (with graceful degradation) rather than inventing approximations without clear labeling.
+- **Reliability first**: treat this as a production system; avoid shortcuts and misleading data.
+- **No fake outputs**: if a data source is unavailable, surface **unavailable** (with graceful degradation) rather than inventing approximations without clear labeling. **Exception:** map **display-only** flight line shaping is allowed when labeled as visual smoothing — API coordinates remain the backend truth unless you change server code.
 - **When giving operational instructions** (dashboards, env vars, deploy steps): provide them **clearly**, **grouped together**, and in **bullet-point format** with exact variable names/values.
 
 **Not yet implemented** (discussed direction):
@@ -327,6 +536,7 @@ Below is a concise log of problems faced while connecting GitHub, Railway, Verce
 - **Build failed (Railpack):** Root directory was not set to `backend`. Fix: **Settings → Source → Root Directory** = `backend`.
 - **No public URL:** **Networking → Generate Domain**.
 - **Internal error on `/scan`:** `SwarmPin` only allowed a few `type` values; `_classify_311` returned types like `water`, `noise`, `fire`. **Fix:** Expanded `SwarmPin.type` literals in `schemas.py` and aligned permit pins to `permit`.
+- **Mapbox geocode `ConnectTimeout` from Railway:** backend could not open TLS to `api.mapbox.com` within the old **10s** single-attempt budget. **Fix:** `geocoding.py` now uses **`httpx`** with **`trust_env=False`**, **longer connect/read timeouts**, and **retries** with backoff; tune via **`MAPBOX_GEOCODE_*`** env vars. If failures persist, verify egress from the container (**`railway ssh`** + `curl`), not only `railway run` on a laptop.
 
 ### Vercel
 
@@ -339,6 +549,7 @@ Below is a concise log of problems faced while connecting GitHub, Railway, Verce
 ### Backend behavior (production debugging)
 
 - **Only airport + mall in logistics:** `GOOGLE_MAPS_API_KEY` on Railway was still a **placeholder** (`YOUR_GOOGLE_MAPS_API_KEY_HERE`). Places calls failed silently; code fell back to static airport/mall only. **Fix:** set the real Google Maps API key in Railway Variables.
+- **“Closest mall” wrong vs Google Maps:** an early version used a tiny hardcoded `NYC_MALLS` list for the mall card. **Fix:** `backend/services/places.py` now prefers **Places API (New)** nearby **`shopping_mall`**, with a text search fallback; static NYC malls are only used if Places returns nothing.
 - **Google Cloud API key restrictions:** If restricted, ensure **Places API (New)** (and related Maps APIs) are allowed for that key.
 - **Gemini / generic bullets:** Check Railway logs for timeout, empty/blocked responses, JSON parse errors, or quota — not only “too little time.”
 
@@ -352,71 +563,82 @@ Below is a concise log of problems faced while connecting GitHub, Railway, Verce
 
 ## Flights / Overhead Aircraft (Current Behavior)
 
-### Modes + data source (important)
+### Modes + data sources (`FLIGHT_MODE`)
 
-Flight overlays support two modes:
+| Mode | Behavior |
+|------|----------|
+| **`auto`** (**default**) | **1)** If Supabase `adsb_samples` has rows in the configured time/bbox window, build up to **3** per-aircraft **polylines** from stored samples (**no OpenSky call during `/scan`**). **2)** If that query yields nothing useful, fall back to the same **static NYC corridors** as `static`. Legacy env value **`adsb`** is accepted and treated as **`auto`**. |
+| **`static`** | Only hand-authored **NYC corridor segments** (JFK/LGA/EWR-style hints). Each `FlightPath` is **`start` + `end`** only (no `path`). **This matches the original marketing/demo map look:** dashed straight segments. |
+| **`live_adsb`** | **Per scan:** OpenSky **`states/all`** in a bbox, pick closest in-air traffic, then **sequential** **`tracks/all`** fetches with per-track timeouts and an overall **`OPENSKY_SCAN_BUDGET_SECONDS`** guard. Returns real polylines when available; otherwise falls back to **static** corridors. |
 
-- **`FLIGHT_MODE=static` (default)**: simplified, hand-authored NYC corridor segments (JFK/LGA/EWR). Backend returns up to **3** nearby paths in `map_data.flight_paths` (nearest first).
-- **`FLIGHT_MODE=adsb` (local dev / testing)**: uses **OpenSky ADS‑B** to render **real aircraft track polylines** (recent samples) near the address. Intended for local testing and UX iteration before productionizing a paid feed / ingestion pipeline.
+**OpenSky auth:** credentials optional for prototyping; **`OPENSKY_USERNAME`** / **`OPENSKY_PASSWORD`** improve rate limits for both ingest and `live_adsb`.
 
-**OpenSky auth:** OpenSky can be used **without** credentials for basic prototyping, but `OPENSKY_USERNAME` / `OPENSKY_PASSWORD` improve rate limits and reliability.
+### Static corridors (what they are / what they aren’t)
 
-### Static mode (what it is / what it isn’t)
+`static` (and the static half of `auto`) is **not** “FAA official tracks.” It is a small set of simplified segments used as a **directional hint** when there are no stored samples or when you force `FLIGHT_MODE=static`.
 
-`static` mode is **not** “FAA official tracks.” It is a small set of simplified corridor segments used as a **directional hint** when ADS‑B is disabled.
+Nearest-corridor ranking uses **minimum great-circle distance** from the property to each segment (cross-track distance with endpoint fallbacks) in `backend/services/flights.py` (`get_nearby_flight_corridors` / `NYC_FLIGHT_CORRIDORS`).
 
-Distance-to-corridor uses the **minimum great-circle distance** from the property to each corridor segment (cross-track distance with endpoint fallbacks), implemented in `backend/services/flights.py`.
+### Stored-sample polylines (`auto` when ingest has data)
 
-### API shape
+`get_stored_sample_flight_paths` in `backend/services/flights.py`:
 
-`map_data` includes:
+1. **Query** `adsb_samples` with a lat/lng bbox, `observed_at >= since`, **`order("observed_at", desc=True)`** + `limit`, then **group by `icao24`**.
+2. **Sort each aircraft’s points chronologically** by `observed_at` (so the polyline direction matches time).
+3. **Split discontinuities before drawing:** break a stored ICAO series on long time gaps (`ADSB_PATH_MAX_GAP_MINUTES`), impossible implied speed vs timestamps (`ADSB_PATH_MAX_IMPLIED_MPH`), and optionally large missing-timestamp jumps (`ADSB_PATH_BLIND_JUMP_MILES`).
+4. **Eligibility:** respect **`ADSB_PATH_MIN_POINTS`**; if exactly one sample remains and `min_points <= 2`, append a **short stub** second vertex so the map has a segment (label notes **single snapshot — direction approximate**).
+5. **Near-property pass selection:** keep one contiguous slice around the closest approach to the scanned address (`ADSB_PATH_KEEP_NEAR_MILES` + `ADSB_PATH_KEEP_PAD_POINTS`) instead of drawing a long unrelated aircraft path.
+6. **Full-resolution cleanup before capping:** dedupe close vertices, drop small sharp local reversals (`ADSB_PATH_SPIKE_*`), filter impossible-speed hops, simplify with Douglas–Peucker, then smooth.
+7. **Vertex cap last:** if a track is still too dense after simplification, widen DP tolerance up to a limit and only then fall back to even decimation. This avoids aliasing sparse ADS-B into zig-zag chords.
+8. **Ranking:** prefer the segment whose closest approach to the property is inside the distance gate; for each ICAO, keep the best nearby segment.
 
-- `flight_paths`: list (up to 3) — preferred
-- `flight_path`: single path (backwards compatibility)
+Labels use human text like **“Recent ADS-B track”** with ICAO, optional median altitude, closest miles, and the single-snapshot disclaimer when applicable.
 
-`FlightPath` may include an optional `path` polyline (list of lat/lng points). When present, the frontend renders that polyline directly (solid line).
+### Live OpenSky tracks (`live_adsb`)
 
-Additional best-effort fields on `FlightPath` (ADS‑B mode):
+`get_adsb_tracks_near_property`:
 
-- `median_altitude_ft`
-- `closest_miles`
-- `callsign`, `airline`, `flight_number` (when parsable)
-- `last_seen_utc` (used to display “seen Xm ago”)
+- **`states/all`** in a bounding box → closest candidates within **`near_miles`**
+- **`tracks/all`** per ICAO **one after another** (not a fan-out storm of parallel requests)
+- Slice each track to the contiguous **“nearby pass”** window around closest approach (`keep_miles` / padding — see `flights.py`)
+- Populate **`path`**, **`callsign` / `airline` / `flight_number`** when parsable, **`last_seen_utc`** for “seen Xm ago”
 
-### How ADS‑B tracks are built (truth-first)
+**Note:** ADS‑B is sampled; **`live_adsb`** tends to look smoother than hourly-ingested **`auto`** polylines because OpenSky’s track API returns denser time series when it succeeds.
 
-In `adsb` mode, the backend:
+### API shape (`map_data`)
 
-- Calls OpenSky `states/all` in a bounding box around the property
-- Chooses nearby in-air aircraft
-- Fetches `tracks/all` for each aircraft
-- Returns the **track polyline** (not an inferred corridor)
-- Labels tracks in a human-friendly way when possible (e.g. airline + flight number), with optional NYC airport hint (`→ LGA`, `→ EWR`, etc.)
+- **`flight_paths`:** list (up to **3**) — preferred for the UI.
+- **`flight_path`:** first path — backwards compatibility.
 
-**Note:** ADS‑B is sampled data. Lines can look segmented if the provider misses samples; DwellSense trims to the contiguous “nearby pass” around closest approach to avoid drawing irrelevant far-away segments.
+`FlightPath`:
 
-**Altitude caveats:** OpenSky altitude fields can be missing or noisy. The UI uses a **median altitude** over available samples and ignores obviously invalid near-zero altitudes when computing medians.
+- **`path`:** optional ordered **`Coordinate[]`**. If **`len(path) >= 2`**, the UI treats it as a **real polyline** (solid line, per-vertex plane animation). If absent, the UI draws **`start` → `end`** only (dashed when the layer detects “corridor-only” geometry).
 
-**Human labels (partial mapping):** OpenSky callsigns often look like `DAL1234` (ICAO airline designator + digits). `backend/services/flights.py` maps a **small curated set** of common NYC carriers (and some regionals) to friendly names; unknown carriers fall back to the raw callsign string.
+Best-effort metadata (when present): `median_altitude_ft`, `closest_miles`, `sample_count`, `callsign`, `airline`, `flight_number`, `last_seen_utc`.
 
 ### Frontend rendering
 
 `frontend/components/MapComponent.tsx`:
 
-- Draws up to 3 flight polylines (solid for ADS‑B tracks; dashed for static corridors)
-- Shows caption when displaying live tracks: **“Live flight tracks (recent).”**
-- Animates a small ✈️ icon **per flight path** along each polyline/segment
+- Builds GeoJSON LineStrings via **`flightPathToLineLngLat`** from **`frontend/lib/flightPathDisplay.ts`**.
+- **Display-only shaping:** the frontend may densify route legs with **great-circle interpolation**, round corners with **Chaikin-style smoothing**, then sample with **centripetal Catmull–Rom**. This does **not** change the API payload — it only changes how the line is displayed on the map.
+- **2-point routes now curve visually:** even if the backend sends only `start` + `end`, `flightPathDisplay.ts` can add great-circle display vertices so Mapbox does not render the route as a single screen-straight chord.
+- **Visual truth rule:** the backend coordinates remain the source of truth. Frontend smoothing is presentation-only and should be described as display-smoothed, not as raw ADS-B precision.
+- **Dash vs solid:** if any path has **`path.length >= 2`**, paint uses a **solid** line; otherwise **dashed** (`line-dasharray`); Mapbox does not get `undefined` dash props when toggling.
+- **Glow + rounded joins:** `MapComponent.tsx` renders a soft cyan glow layer under the visible flight line and uses rounded line caps/joins so routes read as smooth paths.
+- **Caption:** when showing real polylines, copy clarifies that lines use **great-circle arcs + display smoothing** rather than raw chords.
+- **Plane markers:** one ✈️ per path, animated along the **same** coordinates the user sees (including spline).
 
-**Map lifecycle fixes (important):** the map is created once; flight overlays must update when scan results change. The component queues updates until Mapbox style is loaded and recenters when the property moves.
+**Map lifecycle:** the map is created once; flight sources update when `mapData.flight_paths` / `flight_path` change after a new scan.
 
 #### Flight Activity UI (current)
 
-Under the map, the UI shows a **Flight Activity** block:
+Under the map, the **Flight Activity** block includes:
 
-- Summary chips (when available): **Night `/hr`**, **Day `/hr`**, **Typical altitude**, **Data quality**
-- Track chips (horizontal scroll): label + `~altitude ft` + `closest mi` + “seen Xm ago”
+- Summary chips (when exposure is available): **Night `/hr`**, **Day `/hr`**, **Typical altitude**, **Data quality**
+- Track chips (horizontal scroll): label + `~altitude ft` + `closest mi` + “seen Xm ago” when `last_seen_utc` exists (`live_adsb`)
 
-Users do **not** need to understand “ADS‑B”; we avoid showing that term in the UI.
+Users do **not** need to understand “ADS‑B” in product copy; backend logs and docs may still say ADS‑B for engineers.
 
 ### Flight exposure score (prototype)
 
@@ -445,15 +667,20 @@ python3 -m venv venv
 source venv/bin/activate   # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 cp .env.example .env       # fill in keys
-FLIGHT_MODE=adsb uvicorn main:app --reload --host 127.0.0.1 --port 8000   # optional: ADS‑B tracks
+# Optional flight modes for local experiments:
+#   FLIGHT_MODE=auto        (default) — Supabase samples if present, else corridors
+#   FLIGHT_MODE=static      — dashed corridor demo look
+#   FLIGHT_MODE=live_adsb   — OpenSky per scan (slow; needs network)
+uvicorn main:app --reload --host 127.0.0.1 --port 8000
+# or run with APScheduler + optional ingest enabled in .env:
 python main.py
 ```
 
 ### ADS‑B exposure prototype (local)
 
 1. **Preferred:** configure GitHub Action secrets (see **README** / **`.github/workflows/supabase-migrations.yml`**) and run **Deploy Supabase migrations** or push to `main`.
-2. **Manual:** run `backend/sql/adsb_samples.sql` in the Supabase SQL editor (same DDL as `supabase/migrations/`).
-2. **Production ingest:** set **`ADSB_INGEST_ENABLED=true`** on Railway (same service as the API). Optionally tune **`ADSB_INGEST_INTERVAL_SECONDS`** (default **3600** = 1 hour in code; set on Railway to override).
+2. **Manual DDL:** run `backend/sql/adsb_samples.sql` in the Supabase SQL editor (same DDL as `supabase/migrations/`).
+3. **Production ingest:** set **`ADSB_INGEST_ENABLED=true`** on Railway (same service as the API). Optionally tune **`ADSB_INGEST_INTERVAL_SECONDS`** (default **3600** = 1 hour in code; minimum **60**). The ingest job uses **`httpx` with `trust_env=False`** when calling OpenSky so container proxy env does not break TLS (see `backend/jobs/adsb_ingest.py`).
 
 **Local manual loop (still supported):**
 
@@ -497,44 +724,40 @@ python -m jobs.daily_refresh
 
 ---
 
-## Where We Left Off (Before Deploying to “Real Site”)
+## Production status & follow-ups
 
-We have implemented and tested locally (Next.js dev + FastAPI):
+**Shipped in codebase (verify on your Railway + Vercel dashboards):**
 
-- NYC-only scans (backend guardrail) + NYC-locked map viewport
-- Flight overlays:
-  - multi-path support (`flight_paths`)
-  - ADS‑B live tracks mode (`FLIGHT_MODE=adsb`)
-  - human-friendly flight labels (airline/flight number when parsable)
-  - per-path plane animations
-  - “Flight Activity” UI module
-- Flight exposure prototype (`flight_exposure`) backed by Supabase `adsb_samples` + ingest loop
+- NYC-only scans (`/scan` guardrail) + NYC-locked map viewport
+- **`FLIGHT_MODE=auto` (default):** Supabase **`adsb_samples`** polylines when ingest has filled the window; else **static** corridors — **no OpenSky** on the default scan path when samples exist
+- **`FLIGHT_MODE=static`:** original marketing-style **dashed corridor** segments only
+- **`FLIGHT_MODE=live_adsb`:** optional **OpenSky** `tracks` polylines per scan (budgeted), with static fallback
+- Backend **polyline cleanup** (discontinuity splitting, near-property pass selection, dedupe, spike filtering, implied-speed filter, Douglas–Peucker, light smooth) + frontend **display-only great-circle / Chaikin / centripetal Catmull–Rom shaping** (`frontend/lib/flightPathDisplay.ts`)
+- **Geocoding hardening:** `httpx`, **`trust_env=False`**, retries, longer timeouts (`MAPBOX_GEOCODE_*`)
+- **Flight Activity** UI (paths + exposure chips), **fail-open** `flight_exposure`, **Places-backed mall** card with static fallback
+- **Nearby municipal radius:** true Haversine radius is now **~1 mile**, with widened bbox prefilter + higher fetch caps to reduce premature truncation in dense areas
+- **311 sewer / water labels:** map zone and swarm pin labels now use NYC 311 descriptors to classify the issue while keeping visible names short, e.g. **Sewer Odor**, **Sewer Backup**, **Drain Blockage**, **Water Quality Issue**, **Water Leak**, or **Water Pressure**
 
-**Not deployed yet:** production must still:
+**Ongoing / decisions:**
 
-- have latest **`main`** deployed on Railway/Vercel
-- ensure Railway/Vercel env vars are set (`FLIGHT_MODE`, `ADSB_INGEST_*`, etc.)
-- configure GitHub Action secrets and let **Deploy Supabase migrations** apply `supabase/migrations/`, **or** paste `backend/sql/adsb_samples.sql` once in the Supabase SQL editor (if using exposure)
-- decide whether production should use `FLIGHT_MODE=static` or a paid ADS‑B provider + ingestion pipeline
-
-**Next decisions before prod:**
-
-- **Commercial ADS‑B provider vs OpenSky** (coverage, SLA, licensing)
-- **Whether prod should default to `FLIGHT_MODE=static`** until ingestion is stable
-- **Ingestion:** set **`ADSB_INGEST_ENABLED=true`** on Railway (timer inside API) or run a separate worker / `python -m jobs.adsb_ingest`
-- **Replace UTC night/day heuristic** with NYC-local windows + clearer copy (“late night”, “weekday vs weekend”)
+- Keep **`MAPBOX_TOKEN`** and **`GOOGLE_MAPS_API_KEY`** valid on Railway; **`BACKEND_URL`** + **`NEXT_PUBLIC_MAPBOX_TOKEN`** on Vercel
+- **Ingestion:** `ADSB_INGEST_ENABLED` vs external cron running `python -m jobs.adsb_ingest`
+- **Exposure honesty:** replace UTC night/day heuristic with **America/New_York** windows when you tighten the product story
+- **Optional:** commercial ADS‑B feed vs OpenSky-only if you need SLA-grade tracks at scale
 
 ---
 
 ## Recent changelog (high-signal)
 
-- **Risk banner copy:** removed “block/neighborhood” wording from deterministic risk labels (`backend/services/threat_card_layout.py`).
-- **Geocoding:** Mapbox requests ignore system proxy env vars; addresses are URL-encoded (`backend/services/geocoding.py`).
-- **Flights:** evolved from static corridors → multi-corridor → OpenSky live tracks with polylines + UI polish (`backend/services/flights.py`, `frontend/components/MapComponent.tsx`).
-- **Flight UX:** multiple ✈️ animations (one per path), “seen Xm ago” relative timestamps from `last_seen_utc`, and copy that avoids dumping raw ADS‑B jargon on renters.
-- **Mapbox paint correctness:** avoid `undefined` dash arrays when toggling dashed vs solid lines.
-- **Exposure prototype:** `adsb_samples` + ingest + `flight_exposure` on scan; optional **`ADSB_INGEST_ENABLED`** timer in `main.py` (`backend/sql/adsb_samples.sql`, `backend/jobs/adsb_ingest.py`, `backend/services/flight_exposure.py`, `backend/routers/scan.py`, `backend/models/schemas.py`, `frontend/lib/types.ts`).
+- **Risk banner copy:** removed “block/neighborhood” wording from deterministic risk labels (`threat_card_layout.py`).
+- **Geocoding (`geocoding.py`):** switched from **`requests`** to **`httpx.AsyncClient`**; **`trust_env=False`**; configurable **`MAPBOX_GEOCODE_RETRIES`**, connect/read timeouts; retries on timeouts, connection errors, and HTTP **429 / 502 / 503 / 504**; clearer **`RuntimeError`** when Mapbox is unreachable after retries.
+- **Flights (`flights.py`):** **`FLIGHT_MODE`** model is **`auto` | `static` | `live_adsb`** with **`adsb` → `auto`** alias; **`auto`** reads **`adsb_samples`** first; stored-path cleanup includes discontinuity splitting (`ADSB_PATH_MAX_GAP_MINUTES`, `ADSB_PATH_BLIND_JUMP_MILES`), near-pass slicing (`ADSB_PATH_KEEP_*`), dedupe, spike removal (`ADSB_PATH_SPIKE_*`), implied-speed filtering, Douglas–Peucker, smoothing, and final vertex capping; OpenSky **`live_adsb`** remains budgeted/sequential.
+- **Map flight lines (`MapComponent.tsx` + `flightPathDisplay.ts`):** client-side display shaping now includes great-circle leg densification (`NEXT_PUBLIC_FLIGHT_PATH_GREAT_CIRCLE`, `NEXT_PUBLIC_FLIGHT_PATH_GC_*`), Chaikin corner rounding, and centripetal Catmull–Rom (`NEXT_PUBLIC_FLIGHT_PATH_SPLINE_*`); plane animation follows the **same** coordinates as the visible line; caption notes display smoothing; dash/solid rules unchanged in spirit.
+- **Places (`places.py`):** nearest **mall** from **Places `shopping_mall`** / text fallback; hardcoded NYC malls only if Places is empty.
+- **City data (`city_data.py`):** nearby municipal rows use a true **~1 mile** Haversine filter after bbox prefilter; fetch caps were raised for the larger area; sewer / water 311 labels now use `descriptor` details for classification while keeping visible names to 2-3 words, including **Water Quality Issue** instead of ambiguous **Water Quality**.
+- **Ingest (`adsb_ingest.py`):** OpenSky client uses **`trust_env=False`** (proxy-safe) and configurable timeout (see `.env.example`).
+- **Earlier (still true):** exposure fail-open; `SwarmPin` type expansion; Mapbox `line-dasharray` paint fix; Gemini bullets-only split; `adsb_samples` schema + `flight_exposure` on scan.
 
 ---
 
-*Last updated: optional ADS-B sample ingest via `ADSB_INGEST_ENABLED` in `main.py`; docs for Supabase SQL + Railway env.*
+*Last updated: documented the 1-mile municipal search radius and the short sewer / water 311 descriptor-based map labels, including **Water Quality Issue** for bad / complaint-based water quality signals.*

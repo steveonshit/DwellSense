@@ -3,6 +3,7 @@
 import { useEffect, useRef, useCallback } from "react";
 import mapboxgl from "mapbox-gl";
 import { FlightExposure, MapData, LogisticsCard } from "@/lib/types";
+import { flightPathToLineLngLat, flightPathToRouteLatLng } from "@/lib/flightPathDisplay";
 
 mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || "";
 
@@ -52,10 +53,6 @@ interface Props {
 export default function MapComponent({ mapData, logistics, activeRoute, flightExposure }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
-  const planeMarkerRef = useRef<mapboxgl.Marker | null>(null);
-  const planeProgressRef = useRef(0.5);
-  const lastTimeRef = useRef(0);
-  const rafRef = useRef<number>();
   const trackPlaneMarkersRef = useRef<mapboxgl.Marker[]>([]);
   const trackProgressRef = useRef<number[]>([]);
   const trackLastTimeRef = useRef(0);
@@ -108,7 +105,6 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
     });
 
     return () => {
-      if (rafRef.current) cancelAnimationFrame(rafRef.current);
       if (trackRafRef.current) cancelAnimationFrame(trackRafRef.current);
       trackPlaneMarkersRef.current.forEach((m) => m.remove());
       trackPlaneMarkersRef.current = [];
@@ -184,16 +180,12 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
 
       // Always restart per-path animations on new scan data
       if (!paths.length) {
-        planeMarkerRef.current?.remove();
-        planeMarkerRef.current = null;
         trackPlaneMarkersRef.current.forEach((m) => m.remove());
         trackPlaneMarkersRef.current = [];
         if (trackRafRef.current) cancelAnimationFrame(trackRafRef.current);
         trackRafRef.current = undefined;
       } else {
         startTrackPlaneAnimations(map, paths);
-        // Legacy single-plane animation only for non-polyline corridors
-        startPlaneAnimation(map);
       }
     };
 
@@ -408,14 +400,7 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
   };
 
   const upsertFlightPaths = (map: mapboxgl.Map, paths: ReturnType<typeof getFlightPaths>) => {
-    const toLineCoords = (p: (typeof paths)[number]) => {
-      // Prefer real ADS-B track polylines when present.
-      const poly = p.path?.filter(Boolean) ?? [];
-      if (poly.length >= 2) {
-        return poly.map((c) => [c.lng, c.lat]) as [number, number][];
-      }
-      return [[p.start.lng, p.start.lat], [p.end.lng, p.end.lat]] as [number, number][];
-    };
+    const toLineCoords = (p: (typeof paths)[number]) => flightPathToLineLngLat(p);
 
     const data = {
       type: "FeatureCollection" as const,
@@ -433,26 +418,42 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
     if (existing) {
       existing.setData(data);
       const hasRealTracks = paths.some((p) => (p.path?.length ?? 0) >= 2);
-      // Real ADS-B tracks should read as continuous paths; corridors stay dashed.
-      map.setPaintProperty(
-        "flight-paths-line",
-        "line-dasharray",
-        hasRealTracks ? undefined : [2, 3]
-      );
+      const dash = hasRealTracks ? null : ([2, 3] as [number, number]);
+      map.setPaintProperty("flight-paths-line", "line-dasharray", dash as unknown as number[]);
+      if (map.getLayer("flight-paths-glow")) {
+        map.setPaintProperty("flight-paths-glow", "line-dasharray", dash as unknown as number[]);
+      }
       return;
     }
 
     map.addSource("flight-paths", { type: "geojson", data });
     const hasRealTracks = paths.some((p) => (p.path?.length ?? 0) >= 2);
+    const dashPaint = hasRealTracks ? {} : { "line-dasharray": [2, 3] as [number, number] };
+    const lineLayout = { "line-cap": "round" as const, "line-join": "round" as const };
+
+    map.addLayer({
+      id: "flight-paths-glow",
+      type: "line",
+      source: "flight-paths",
+      layout: lineLayout,
+      paint: {
+        "line-color": "#22d3ee",
+        "line-width": 11,
+        "line-opacity": 0.2,
+        "line-blur": 2.5,
+        ...dashPaint,
+      },
+    });
     map.addLayer({
       id: "flight-paths-line",
       type: "line",
       source: "flight-paths",
+      layout: lineLayout,
       paint: {
         "line-color": "#06b6d4",
         "line-width": 3,
-        ...(hasRealTracks ? {} : { "line-dasharray": [2, 3] }),
-        "line-opacity": 0.8,
+        ...dashPaint,
+        "line-opacity": 0.88,
       },
     });
   };
@@ -467,28 +468,42 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
     const routes = paths
       .slice(0, 3)
       .map((p) => {
-        const poly = p.path?.filter(Boolean) ?? [];
-        const coords =
-          poly.length >= 2
-            ? poly.map((c) => ({ lat: c.lat, lng: c.lng }))
-            : [{ lat: p.start.lat, lng: p.start.lng }, { lat: p.end.lat, lng: p.end.lng }];
-        return coords;
+        const coords = flightPathToRouteLatLng(p);
+        return coords.length >= 2 ? coords : [];
       })
       .filter((c) => c.length >= 2);
 
     if (!routes.length) return;
 
+    const routeMetrics = routes
+      .map((route) => {
+        const cumulative: number[] = [0];
+        for (let i = 1; i < route.length; i++) {
+          const prev = route[i - 1];
+          const cur = route[i];
+          const meters = new mapboxgl.LngLat(prev.lng, prev.lat).distanceTo(
+            new mapboxgl.LngLat(cur.lng, cur.lat)
+          );
+          cumulative.push(cumulative[i - 1] + meters);
+        }
+        const totalMeters = cumulative[cumulative.length - 1] ?? 0;
+        return totalMeters > 0 ? { route, cumulative, totalMeters } : null;
+      })
+      .filter((m): m is { route: { lat: number; lng: number }[]; cumulative: number[]; totalMeters: number } => Boolean(m));
+
+    if (!routeMetrics.length) return;
+
     trackProgressRef.current = routes.map(() => 0);
     trackLastTimeRef.current = 0;
 
     // Create a plane marker per route
-    trackPlaneMarkersRef.current = routes.map((r) => {
+    trackPlaneMarkersRef.current = routeMetrics.map(({ route }) => {
       const el = document.createElement("div");
       el.style.cssText =
         "font-size: 18px; line-height: 1; filter: drop-shadow(0 0 6px rgba(6,182,212,0.7));";
       el.textContent = "✈️";
       return new mapboxgl.Marker({ element: el, anchor: "center" })
-        .setLngLat([r[0].lng, r[0].lat])
+        .setLngLat([route[0].lng, route[0].lat])
         .addTo(map);
     });
 
@@ -502,20 +517,23 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
       const speedMultiplier = Math.pow(2, 14 - zoom);
       const baseSpeed = 1 / 90000; // progress per ms
 
-      routes.forEach((route, idx) => {
-        const segCount = route.length - 1;
-        const total = Math.max(1, segCount);
+      routeMetrics.forEach(({ route, cumulative, totalMeters }, idx) => {
         let p = trackProgressRef.current[idx] ?? 0;
         p += delta * baseSpeed * speedMultiplier;
-        if (p > 1) p -= 1;
+        if (p > 1) p %= 1;
         trackProgressRef.current[idx] = p;
 
-        // Map 0..1 to route segments
-        const t = p * total;
-        const i = Math.min(segCount - 1, Math.floor(t));
-        const f = t - i;
+        const targetMeters = p * totalMeters;
+        let i = 0;
+        while (i < cumulative.length - 2 && cumulative[i + 1] < targetMeters) {
+          i++;
+        }
+
         const a = route[i];
         const b = route[i + 1];
+        const segStart = cumulative[i];
+        const segEnd = cumulative[i + 1];
+        const f = (targetMeters - segStart) / Math.max(1, segEnd - segStart);
         const lat = a.lat + (b.lat - a.lat) * f;
         const lng = a.lng + (b.lng - a.lng) * f;
         trackPlaneMarkersRef.current[idx]?.setLngLat([lng, lat]);
@@ -526,47 +544,6 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
 
     trackRafRef.current = requestAnimationFrame(step);
   }, []);
-
-  const startPlaneAnimation = useCallback((map: mapboxgl.Map) => {
-    const paths = getFlightPaths();
-    if (!paths.length) return;
-    // If we're rendering real ADS-B polylines, don't animate a fake plane.
-    if (paths.some((p) => (p.path?.length ?? 0) >= 2)) return;
-
-    // Restart cleanly (avoid stacking RAF loops)
-    if (rafRef.current) cancelAnimationFrame(rafRef.current);
-    rafRef.current = undefined;
-    planeMarkerRef.current?.remove();
-    planeMarkerRef.current = null;
-
-    const { start, end } = paths[0];
-
-    const el = document.createElement("div");
-    el.className = "animated-plane";
-    el.textContent = "✈️";
-
-    planeMarkerRef.current = new mapboxgl.Marker({ element: el, anchor: "center" })
-      .setLngLat([start.lng, start.lat])
-      .addTo(map);
-
-    const animate = (time: number) => {
-      if (!lastTimeRef.current) lastTimeRef.current = time;
-      const delta = Math.min(time - lastTimeRef.current, 100);
-      lastTimeRef.current = time;
-
-      const zoom = map.getZoom();
-      const speedMultiplier = Math.pow(2, 14 - zoom);
-      planeProgressRef.current += (delta / 80000) * speedMultiplier;
-      if (planeProgressRef.current > 1) planeProgressRef.current = 0;
-
-      const lat = start.lat + (end.lat - start.lat) * planeProgressRef.current;
-      const lng = start.lng + (end.lng - start.lng) * planeProgressRef.current;
-      planeMarkerRef.current?.setLngLat([lng, lat]);
-
-      rafRef.current = requestAnimationFrame(animate);
-    };
-    rafRef.current = requestAnimationFrame(animate);
-  }, [mapData.flight_path, mapData.flight_paths]);
 
   return (
     <div className="w-full bg-slate-800 rounded-3xl border border-slate-700 shadow-2xl p-4 fade-in" style={{ animationDelay: "0.2s" }}>
@@ -671,7 +648,7 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
 
       {getFlightPaths().some((p) => (p.path?.length ?? 0) >= 2) && (
         <div className="mt-2 px-2 text-[10px] md:text-[11px] font-bold text-slate-500">
-          Live flight tracks (recent).
+          Live flight tracks (recent); lines use great-circle arcs + display smoothing (not raw chords).
         </div>
       )}
     </div>

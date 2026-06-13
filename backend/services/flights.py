@@ -311,52 +311,233 @@ def _decimate_indices(n: int, max_points: int) -> list[int]:
     return uniq
 
 
-def _densify_polyline(
+def _dedupe_track_points(
     coords: list[Coordinate],
-    *,
-    step_miles: float,
-    cap: int = 96,
-) -> list[Coordinate]:
-    """
-    Insert vertices along each segment so the map reads as a smooth curved path
-    (similar density to a live OpenSky track polyline), without any extra HTTP calls.
-
-    Uses short-segment linear lat/lng interpolation (fine for short legs in the NYC metro box).
-    Set ADSB_PATH_DENSIFY_STEP_MILES=0 to disable.
-    """
-    if step_miles <= 0 or len(coords) < 2:
-        return coords
-    out: list[Coordinate] = [coords[0]]
+    times: list[datetime | None],
+    alts: list[float | None],
+    min_sep_miles: float,
+) -> tuple[list[Coordinate], list[datetime | None], list[float | None]]:
+    """Drop consecutive vertices closer than min_sep_miles (duplicate GPS / ingest noise)."""
+    if not coords:
+        return [], [], []
+    if min_sep_miles <= 0:
+        return coords, times, alts
+    out_c = [coords[0]]
+    out_t: list[datetime | None] = [times[0] if times else None]
+    out_a: list[float | None] = [alts[0] if alts else None]
     for i in range(1, len(coords)):
-        a, b = out[-1], coords[i]
-        dist = _haversine_miles(a.lat, a.lng, b.lat, b.lng)
-        if dist <= step_miles + 1e-6:
-            if len(out) >= cap:
-                break
-            out.append(b)
+        if _haversine_miles(out_c[-1].lat, out_c[-1].lng, coords[i].lat, coords[i].lng) >= min_sep_miles:
+            out_c.append(coords[i])
+            out_t.append(times[i] if i < len(times) else None)
+            out_a.append(alts[i] if i < len(alts) else None)
+    return out_c, out_t, out_a
+
+
+def _filter_impossible_speed(
+    coords: list[Coordinate],
+    alts: list[float | None],
+    times: list[datetime | None],
+    *,
+    max_mph: float,
+) -> tuple[list[Coordinate], list[float | None], list[datetime | None]]:
+    """Drop points that imply faster-than-airliner hops between consecutive timestamps."""
+    if len(coords) < 2:
+        return coords, alts, times
+    n = len(coords)
+    aln = (alts + [None] * n)[:n]
+    tsn = (times + [None] * n)[:n]
+    out_c = [coords[0]]
+    out_a: list[float | None] = [aln[0]]
+    out_t: list[datetime | None] = [tsn[0]]
+    t_last = tsn[0]
+    for i in range(1, n):
+        t = tsn[i]
+        dt_h: float | None = None
+        if t_last is not None and t is not None:
+            try:
+                dt_h = abs((t - t_last).total_seconds()) / 3600.0
+            except Exception:
+                dt_h = None
+        dist = _haversine_miles(out_c[-1].lat, out_c[-1].lng, coords[i].lat, coords[i].lng)
+        if dt_h is not None and dt_h > 1e-6 and (dist / dt_h) > max_mph:
             continue
-        room = cap - len(out)
-        if room <= 1:
-            out.append(b)
-            break
-        n = min(room, max(2, int(math.ceil(dist / step_miles))))
-        for j in range(1, n):
-            t = j / n
-            out.append(
+        out_c.append(coords[i])
+        out_a.append(aln[i])
+        out_t.append(t)
+        if t is not None:
+            t_last = t
+    return out_c, out_a, out_t
+
+
+def _douglas_peucker_indices(points: list[Coordinate], epsilon_miles: float) -> list[int]:
+    """Return vertex indices to keep (always includes endpoints)."""
+    n = len(points)
+    if n < 3 or epsilon_miles <= 0:
+        return list(range(n))
+    keep = {0, n - 1}
+    stack: list[tuple[int, int]] = [(0, n - 1)]
+    while stack:
+        i0, i1 = stack.pop()
+        if i1 <= i0 + 1:
+            continue
+        a, b = points[i0], points[i1]
+        imax = i0
+        dmax = 0.0
+        for j in range(i0 + 1, i1):
+            d = _distance_point_to_segment_miles(points[j], a, b)
+            if d > dmax:
+                dmax, imax = d, j
+        if dmax >= epsilon_miles:
+            keep.add(imax)
+            stack.append((i0, imax))
+            stack.append((imax, i1))
+    return sorted(keep)
+
+
+def _smooth_coords_3tap(coords: list[Coordinate], passes: int) -> list[Coordinate]:
+    """Light moving average on interior points (reduces jagged ADS-B jitter)."""
+    if passes <= 0 or len(coords) < 3:
+        return coords
+    cur = coords[:]
+    for _ in range(passes):
+        nxt = [cur[0]]
+        for i in range(1, len(cur) - 1):
+            nxt.append(
                 Coordinate(
-                    lat=a.lat + t * (b.lat - a.lat),
-                    lng=a.lng + t * (b.lng - a.lng),
+                    lat=(cur[i - 1].lat + cur[i].lat + cur[i + 1].lat) / 3.0,
+                    lng=(cur[i - 1].lng + cur[i].lng + cur[i + 1].lng) / 3.0,
                 )
             )
-        if len(out) >= cap:
-            break
-        out.append(b)
-    # Drop consecutive duplicates (can happen at segment joins)
-    deduped: list[Coordinate] = []
-    for c in out:
-        if not deduped or abs(c.lat - deduped[-1].lat) > 1e-9 or abs(c.lng - deduped[-1].lng) > 1e-9:
-            deduped.append(c)
-    return deduped if len(deduped) >= 2 else coords
+        nxt.append(cur[-1])
+        cur = nxt
+    return cur
+
+
+def _split_series_on_discontinuity(
+    series: list[tuple[Coordinate, datetime | None, float | None]],
+    max_gap_minutes: float,
+    max_implied_mph: float,
+    blind_jump_miles: float,
+) -> list[list[tuple[Coordinate, datetime | None, float | None]]]:
+    """
+    Split a time-ordered ADS-B series on:
+    - long time gaps (different flights / on-ground),
+    - impossible implied speed between consecutive samples (bad merges / bogus pings),
+    - optional large spatial jumps when either timestamp is missing (off by default).
+    """
+    if not series:
+        return []
+    out: list[list[tuple[Coordinate, datetime | None, float | None]]] = []
+    cur: list[tuple[Coordinate, datetime | None, float | None]] = [series[0]]
+    for i in range(1, len(series)):
+        prev = cur[-1]
+        this = series[i]
+        d = _haversine_miles(prev[0].lat, prev[0].lng, this[0].lat, this[0].lng)
+        split = False
+        pt, tt = prev[1], this[1]
+        if pt is not None and tt is not None:
+            try:
+                gap_min = abs((tt - pt).total_seconds()) / 60.0
+                if max_gap_minutes > 0 and gap_min > max_gap_minutes:
+                    split = True
+                else:
+                    dt_h = gap_min / 60.0
+                    if dt_h > 1e-6 and (d / dt_h) > max_implied_mph:
+                        split = True
+            except Exception:
+                pass
+        if (
+            not split
+            and blind_jump_miles > 0
+            and (pt is None or tt is None)
+            and d > blind_jump_miles
+        ):
+            split = True
+        if split:
+            out.append(cur)
+            cur = [this]
+        else:
+            cur.append(this)
+    out.append(cur)
+    return out
+
+
+def _trim_track_near_property(
+    property_coord: Coordinate,
+    coords: list[Coordinate],
+    times: list[datetime | None],
+    alts: list[float | None],
+    *,
+    keep_miles: float,
+    pad: int,
+) -> tuple[list[Coordinate], list[datetime | None], list[float | None]]:
+    """
+    Keep one contiguous slice where the aircraft is near the scan address (same idea as
+    live OpenSky track slicing).     If nothing falls inside ``keep_miles``, return inputs unchanged.
+    """
+    if len(coords) < 2 or keep_miles <= 0:
+        return coords, times, alts
+    dists = [_haversine_miles(property_coord.lat, property_coord.lng, c.lat, c.lng) for c in coords]
+    min_idx = min(range(len(dists)), key=dists.__getitem__)
+    within = [d <= keep_miles for d in dists]
+    if not any(within):
+        return coords, times, alts
+    seg = _best_within_segment_indices(within, min_idx, pad)
+    if seg is None:
+        return coords, times, alts
+    a, b = seg
+    if b - a < 2:
+        return coords, times, alts
+    return coords[a:b], times[a:b], alts[a:b]
+
+
+def _bearing_delta_rad(b1: float, b2: float) -> float:
+    d = b2 - b1
+    while d > math.pi:
+        d -= 2 * math.pi
+    while d < -math.pi:
+        d += 2 * math.pi
+    return abs(d)
+
+
+def _drop_sharp_local_reversals(
+    coords: list[Coordinate],
+    times: list[datetime | None],
+    alts: list[float | None],
+    *,
+    min_turn_deg: float,
+    max_leg_miles: float,
+) -> tuple[list[Coordinate], list[datetime | None], list[float | None]]:
+    """
+    Remove interior vertices that look like multilateration zig-zag: very sharp heading
+    reversal over two very short legs.
+    """
+    if len(coords) < 3 or min_turn_deg >= 180 or max_leg_miles <= 0:
+        return coords, times, alts
+    min_turn = math.radians(min_turn_deg)
+    c = coords[:]
+    t = (times + [None] * len(coords))[: len(coords)]
+    a = (alts + [None] * len(coords))[: len(coords)]
+    changed = True
+    iterations = 0
+    while changed and iterations < 30:
+        changed = False
+        iterations += 1
+        i = 1
+        while i < len(c) - 1:
+            d1 = _haversine_miles(c[i - 1].lat, c[i - 1].lng, c[i].lat, c[i].lng)
+            d2 = _haversine_miles(c[i].lat, c[i].lng, c[i + 1].lat, c[i + 1].lng)
+            if d1 <= max_leg_miles and d2 <= max_leg_miles:
+                b1 = _bearing(c[i - 1], c[i])
+                b2 = _bearing(c[i], c[i + 1])
+                if _bearing_delta_rad(b1, b2) >= min_turn:
+                    del c[i]
+                    del t[i]
+                    del a[i]
+                    changed = True
+                    continue
+            i += 1
+    return c, t, a
 
 
 def get_stored_sample_flight_paths(
@@ -367,6 +548,12 @@ def get_stored_sample_flight_paths(
     """
     Build map polylines from Supabase `adsb_samples` (same source as flight_exposure).
     One DB round-trip per scan — no OpenSky calls here, so no ingest-induced timeouts.
+
+    Path shaping (tunable via env): ``ADSB_PATH_MAX_GAP_MINUTES`` + implied-speed splits
+    (separate flights / bogus legs), ``ADSB_PATH_KEEP_NEAR_MILES`` / ``ADSB_PATH_KEEP_PAD_POINTS``
+    (trim to one near-property pass),
+    ``ADSB_PATH_DEDUPE_MIN_SEP_MI``, ``ADSB_PATH_MAX_IMPLIED_MPH``, ``ADSB_PATH_BLIND_JUMP_MILES``,
+    ``ADSB_PATH_DP_EPSILON_MILES``, ``ADSB_PATH_SMOOTH_PASSES``, ``ADSB_PATH_SPIKE_*`` (drop local multilateration zig-zags).
     """
     try:
         days = max(1, min(14, int(os.getenv("ADSB_PATH_DAYS", "7"))))
@@ -377,8 +564,6 @@ def get_stored_sample_flight_paths(
     except ValueError:
         bbox_radius = 22.0
     try:
-        # Hourly ingest → most aircraft get ≤1 row per run; requiring 4+ points per ICAO
-        # almost always yields zero polylines → static corridor fallback. 2 = minimum line.
         min_points = max(2, min(20, int(os.getenv("ADSB_PATH_MIN_POINTS", "2"))))
     except ValueError:
         min_points = 2
@@ -390,6 +575,46 @@ def get_stored_sample_flight_paths(
         row_limit = max(2000, min(25000, int(os.getenv("ADSB_PATH_ROW_LIMIT", "15000"))))
     except ValueError:
         row_limit = 15000
+    try:
+        dedupe_min_sep_mi = max(0.0, min(0.5, float(os.getenv("ADSB_PATH_DEDUPE_MIN_SEP_MI", "0.045"))))
+    except ValueError:
+        dedupe_min_sep_mi = 0.045
+    try:
+        max_implied_mph = max(200.0, min(900.0, float(os.getenv("ADSB_PATH_MAX_IMPLIED_MPH", "620"))))
+    except ValueError:
+        max_implied_mph = 620.0
+    try:
+        dp_epsilon_mi = max(0.0, min(3.0, float(os.getenv("ADSB_PATH_DP_EPSILON_MILES", "0.52"))))
+    except ValueError:
+        dp_epsilon_mi = 0.52
+    try:
+        smooth_passes = max(0, min(4, int(os.getenv("ADSB_PATH_SMOOTH_PASSES", "2"))))
+    except ValueError:
+        smooth_passes = 2
+    try:
+        max_gap_minutes = max(20.0, min(720.0, float(os.getenv("ADSB_PATH_MAX_GAP_MINUTES", "120"))))
+    except ValueError:
+        max_gap_minutes = 120.0
+    try:
+        keep_near_miles = max(5.0, min(40.0, float(os.getenv("ADSB_PATH_KEEP_NEAR_MILES", "18"))))
+    except ValueError:
+        keep_near_miles = 18.0
+    try:
+        keep_pad_points = max(0, min(30, int(os.getenv("ADSB_PATH_KEEP_PAD_POINTS", "6"))))
+    except ValueError:
+        keep_pad_points = 6
+    try:
+        spike_min_turn = max(90.0, min(175.0, float(os.getenv("ADSB_PATH_SPIKE_MIN_TURN_DEG", "148"))))
+    except ValueError:
+        spike_min_turn = 148.0
+    try:
+        spike_max_leg_mi = max(0.0, min(1.0, float(os.getenv("ADSB_PATH_SPIKE_MAX_LEG_MI", "0.22"))))
+    except ValueError:
+        spike_max_leg_mi = 0.22
+    try:
+        blind_jump_miles = max(0.0, min(200.0, float(os.getenv("ADSB_PATH_BLIND_JUMP_MILES", "0"))))
+    except ValueError:
+        blind_jump_miles = 0.0
 
     try:
         supabase = _get_client()
@@ -429,18 +654,27 @@ def get_stored_sample_flight_paths(
         if r.get("on_ground") is True:
             continue
         try:
-            lat = float(r["lat"])
-            lng = float(r["lng"])
+            float(r["lat"])
+            float(r["lng"])
         except Exception:
             continue
         by_icao.setdefault(icao, []).append(r)
 
-    candidates: list[tuple[float, str, list[Coordinate], list[float]]] = []
+    def _parse_obs(o: object) -> datetime:
+        if o is None:
+            return datetime.min.replace(tzinfo=timezone.utc)
+        try:
+            return datetime.fromisoformat(str(o).replace("Z", "+00:00"))
+        except Exception:
+            return datetime.min.replace(tzinfo=timezone.utc)
+
+    candidates: list[tuple[float, str, list[Coordinate], list[float | None], int]] = []
     for icao, pts in by_icao.items():
-        if len(pts) < 1:
+        if not pts:
             continue
-        pts_sorted = sorted(pts, key=lambda x: str(x.get("observed_at") or ""))
-        series: list[tuple[Coordinate, float | None]] = []
+
+        pts_sorted = sorted(pts, key=lambda x: _parse_obs(x.get("observed_at")))
+        series: list[tuple[Coordinate, datetime | None, float | None]] = []
         for p in pts_sorted:
             try:
                 la = float(p["lat"])
@@ -449,38 +683,125 @@ def get_stored_sample_flight_paths(
                 continue
             alt_m = p.get("geo_alt_m") if isinstance(p.get("geo_alt_m"), (int, float)) else p.get("baro_alt_m")
             alt_f = float(alt_m) if isinstance(alt_m, (int, float)) else None
-            series.append((Coordinate(lat=la, lng=lo), alt_f))
+            t_obs: datetime | None = None
+            try:
+                t_obs = datetime.fromisoformat(str(p.get("observed_at", "")).replace("Z", "+00:00"))
+            except Exception:
+                t_obs = None
+            series.append((Coordinate(lat=la, lng=lo), t_obs, alt_f))
 
-        if len(series) < 1:
-            continue
-        raw_count = len(series)
-        # Hourly ingest: many aircraft only have one row until the next run. Map needs ≥2
-        # vertices; add a short east-west stub (~100m) so we never lie about position.
-        if raw_count == 1:
-            c, a = series[0]
-            dlng = 0.0014 / max(0.2, math.cos(math.radians(c.lat)))
-            series.append((Coordinate(lat=c.lat, lng=c.lng + dlng), a))
-        elif raw_count < min_points:
+        if not series:
             continue
 
-        coords_full = [t[0] for t in series]
-        alts_m = [t[1] for t in series]
+        segments = _split_series_on_discontinuity(
+            series, max_gap_minutes, max_implied_mph, blind_jump_miles
+        )
+        best_for_icao: tuple[float, str, list[Coordinate], list[float | None], int] | None = None
 
-        idxs = _decimate_indices(len(coords_full), max_points)
-        coords = [coords_full[i] for i in idxs]
-        alts_track = [alts_m[i] for i in idxs]
-        try:
-            densify_step = float(os.getenv("ADSB_PATH_DENSIFY_STEP_MILES", "0.28"))
-        except ValueError:
-            densify_step = 0.28
-        coords = _densify_polyline(coords, step_miles=densify_step, cap=96)
-        dists = [_haversine_miles(coord.lat, coord.lng, c.lat, c.lng) for c in coords]
-        min_d = min(dists) if dists else 999.0
-        # Skip aircraft that never came reasonably close (reduces clutter / bogus lines)
-        if min_d > min(bbox_radius * 0.85, 18.0):
-            continue
+        for seg in segments:
+            raw_count_seg = len(seg)
+            if raw_count_seg < min_points:
+                if not (raw_count_seg == 1 and min_points <= 2):
+                    continue
 
-        candidates.append((min_d, icao, coords, alts_track, raw_count))
+            work = list(seg)
+            if raw_count_seg == 1:
+                c0, t0, a0 = work[0]
+                dlng = 0.0014 / max(0.2, math.cos(math.radians(c0.lat)))
+                work.append((Coordinate(lat=c0.lat, lng=c0.lng + dlng), t0, a0))
+
+            coords_full = [s[0] for s in work]
+            times_full = [s[1] for s in work]
+            alts_m = [s[2] for s in work]
+
+            coords_full, times_full, alts_m = _trim_track_near_property(
+                coord,
+                coords_full,
+                times_full,
+                alts_m,
+                keep_miles=keep_near_miles,
+                pad=keep_pad_points,
+            )
+            if len(coords_full) < 2:
+                coords_full = [s[0] for s in work]
+                times_full = [s[1] for s in work]
+                alts_m = [s[2] for s in work]
+
+            # Full-resolution cleanup first. Index-decimating *before* simplify aliases sparse
+            # ADS-B into zig-zag chords; DP then smooth, then cap vertices if still too dense.
+            coords = list(coords_full)
+            times = list(times_full)
+            alts_track = list(alts_m)
+
+            if dedupe_min_sep_mi > 0:
+                coords, times, alts_track = _dedupe_track_points(coords, times, alts_track, dedupe_min_sep_mi)
+            else:
+                times = (times + [None] * len(coords))[: len(coords)]
+                alts_track = (alts_track + [None] * len(coords))[: len(coords)]
+
+            if spike_max_leg_mi > 0 and spike_min_turn < 180.0:
+                coords, times, alts_track = _drop_sharp_local_reversals(
+                    coords,
+                    times,
+                    alts_track,
+                    min_turn_deg=spike_min_turn,
+                    max_leg_miles=spike_max_leg_mi,
+                )
+
+            coords, alts_track, times = _filter_impossible_speed(
+                coords, alts_track, times, max_mph=max_implied_mph
+            )
+
+            if len(coords) >= 3 and dp_epsilon_mi > 0:
+                keep_idx = _douglas_peucker_indices(coords, dp_epsilon_mi)
+                coords = [coords[i] for i in keep_idx]
+                alts_track = [alts_track[i] for i in keep_idx]
+                times = [times[i] for i in keep_idx]
+
+            ec = float(dp_epsilon_mi)
+            widen_guard = 0
+            while len(coords) > max_points and len(coords) >= 3 and ec > 0 and widen_guard < 14:
+                widen_guard += 1
+                ec = min(3.0, ec * 1.22)
+                keep_idx = _douglas_peucker_indices(coords, ec)
+                if len(keep_idx) >= len(coords):
+                    break
+                coords = [coords[i] for i in keep_idx]
+                alts_track = [alts_track[i] for i in keep_idx]
+                times = [times[i] for i in keep_idx]
+
+            if len(coords) > max_points:
+                idxs = _decimate_indices(len(coords), max_points)
+                coords = [coords[i] for i in idxs]
+                times = [times[i] for i in idxs]
+                alts_track = [alts_track[i] for i in idxs]
+
+            coords = _smooth_coords_3tap(coords, smooth_passes)
+
+            if len(coords) < 2:
+                continue
+
+            dists = [_haversine_miles(coord.lat, coord.lng, c.lat, c.lng) for c in coords]
+            min_d = min(dists) if dists else 999.0
+            if min_d > min(bbox_radius * 0.85, 18.0):
+                continue
+
+            cand: tuple[float, str, list[Coordinate], list[float | None], int] = (
+                min_d,
+                icao,
+                coords,
+                alts_track,
+                raw_count_seg,
+            )
+            if best_for_icao is None:
+                best_for_icao = cand
+            elif cand[0] < best_for_icao[0] or (
+                cand[0] == best_for_icao[0] and raw_count_seg > best_for_icao[4]
+            ):
+                best_for_icao = cand
+
+        if best_for_icao is not None:
+            candidates.append(best_for_icao)
 
     candidates.sort(key=lambda x: x[0])
     out: list[FlightPath] = []
@@ -495,8 +816,8 @@ def get_stored_sample_flight_paths(
             median_alt_ft = int(round(med_m * 3.28084))
 
         alt_txt = f", ~{median_alt_ft} ft" if median_alt_ft is not None else ""
-        snap = " — single snapshot" if raw_count == 1 else ""
-        label = f"Recent ADS-B track ({icao.upper()}{alt_txt}, closest {min_d:.1f} mi){snap}"
+        snap_note = " (single snapshot — direction approximate)" if raw_count == 1 else ""
+        label = f"Recent ADS-B track ({icao.upper()}{alt_txt}, closest {min_d:.1f} mi){snap_note}"
         out.append(
             FlightPath(
                 start=coords[0],
@@ -668,6 +989,14 @@ async def get_adsb_tracks_near_property(
       per-request timeout so `/scan` does not fan out dozens of parallel calls.
     """
     try:
+        radius_miles = max(10.0, min(80.0, float(os.getenv("OPENSKY_STATE_BBOX_MILES", str(radius_miles)))))
+    except ValueError:
+        radius_miles = 25.0
+    try:
+        near_miles = max(5.0, min(40.0, float(os.getenv("OPENSKY_NEAR_MILES", str(near_miles)))))
+    except ValueError:
+        near_miles = 10.0
+    try:
         max_tracks = max(1, min(5, int(os.getenv("OPENSKY_MAX_TRACK_FETCHES", str(max_tracks)))))
     except ValueError:
         max_tracks = 3
@@ -676,7 +1005,7 @@ async def get_adsb_tracks_near_property(
     auth = (OPENSKY_USERNAME, OPENSKY_PASSWORD) if OPENSKY_USERNAME else None
 
     timeout = httpx.Timeout(12.0, connect=6.0)
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
         resp = await client.get(
             "https://opensky-network.org/api/states/all",
             params={"lamin": lat_min, "lamax": lat_max, "lomin": lng_min, "lomax": lng_max},
@@ -757,57 +1086,93 @@ async def get_adsb_tracks_near_property(
         if not isinstance(path, list) or len(path) < 2:
             continue
 
-        coords: list[Coordinate] = []
-        alts_m: list[float] = []
-        times: list[int] = []
+        samples: list[tuple[Coordinate, int | None, float | None]] = []
         for p in path:
             # OpenSky path entries are typically [time, lat, lon, baro_alt, true_track, on_ground]
             if not isinstance(p, list) or len(p) < 3:
                 continue
-            if isinstance(p[0], (int, float)):
-                times.append(int(p[0]))
+            observed_ts = int(p[0]) if isinstance(p[0], (int, float)) else None
             lat = p[1]
             lon = p[2]
             if lat is None or lon is None:
                 continue
             try:
-                coords.append(Coordinate(lat=float(lat), lng=float(lon)))
+                sample_coord = Coordinate(lat=float(lat), lng=float(lon))
             except Exception:
                 continue
             # baro_alt in meters is often at index 3 when present
-            if len(p) > 3 and isinstance(p[3], (int, float)):
-                alts_m.append(float(p[3]))
+            alt_m = float(p[3]) if len(p) > 3 and isinstance(p[3], (int, float)) else None
+            samples.append((sample_coord, observed_ts, alt_m))
 
-        if len(coords) < 2:
+        if len(samples) < 2:
             continue
 
         # Keep a longer continuous segment near the property.
         # OpenSky "tracks" can include points far away; we keep the contiguous pass
         # around the closest approach where the aircraft stays within `keep_miles`.
-        dists = [_haversine_miles(coord.lat, coord.lng, c.lat, c.lng) for c in coords]
-        min_idx = min(range(len(dists)), key=dists.__getitem__)
+        try:
+            keep_miles = max(8.0, min(50.0, float(os.getenv("OPENSKY_TRACK_KEEP_MILES", "15"))))
+        except ValueError:
+            keep_miles = 15.0
+        try:
+            pad = max(0, min(60, int(os.getenv("OPENSKY_TRACK_PAD_POINTS", "6"))))
+        except ValueError:
+            pad = 6
+        try:
+            max_leg_miles = max(2.0, min(25.0, float(os.getenv("OPENSKY_TRACK_MAX_LEG_MILES", "8"))))
+        except ValueError:
+            max_leg_miles = 8.0
+        try:
+            min_track_points = max(2, min(30, int(os.getenv("OPENSKY_TRACK_MIN_POINTS", "2"))))
+        except ValueError:
+            min_track_points = 2
 
-        keep_miles = 15.0
-        pad = 6  # a few samples of context beyond the threshold
+        continuous_segments: list[list[tuple[Coordinate, int | None, float | None]]] = []
+        cur_segment = [samples[0]]
+        for sample in samples[1:]:
+            prev_coord = cur_segment[-1][0]
+            this_coord = sample[0]
+            leg_miles = _haversine_miles(prev_coord.lat, prev_coord.lng, this_coord.lat, this_coord.lng)
+            if leg_miles > max_leg_miles:
+                if len(cur_segment) >= 2:
+                    continuous_segments.append(cur_segment)
+                cur_segment = [sample]
+            else:
+                cur_segment.append(sample)
+        if len(cur_segment) >= 2:
+            continuous_segments.append(cur_segment)
 
-        within = [d <= keep_miles for d in dists]
-        seg = _best_within_segment_indices(within, min_idx, pad) if any(within) else None
-        if seg:
-            start_i, end_i = seg
-        else:
-            # Fallback: fixed window if nothing falls within threshold (rare)
-            window = 20
-            start_i = max(0, min_idx - window)
-            end_i = min(len(coords), min_idx + window + 1)
+        best_slice: tuple[float, list[tuple[Coordinate, int | None, float | None]]] | None = None
+        for segment in continuous_segments:
+            segment_coords = [s[0] for s in segment]
+            dists = [_haversine_miles(coord.lat, coord.lng, c.lat, c.lng) for c in segment_coords]
+            min_idx = min(range(len(dists)), key=dists.__getitem__)
+            within = [d <= keep_miles for d in dists]
+            seg = _best_within_segment_indices(within, min_idx, pad) if any(within) else None
+            if seg:
+                start_i, end_i = seg
+            else:
+                window = 20
+                start_i = max(0, min_idx - window)
+                end_i = min(len(segment), min_idx + window + 1)
+            segment_slice = segment[start_i:end_i]
+            if len(segment_slice) < 2:
+                continue
+            min_dist_slice = min(dists[start_i:end_i])
+            if best_slice is None or (min_dist_slice, -len(segment_slice)) < (best_slice[0], -len(best_slice[1])):
+                best_slice = (min_dist_slice, segment_slice)
 
-        coords_near = coords[start_i:end_i]
-        if len(coords_near) < 2:
+        if best_slice is None:
             continue
 
-        min_dist_near = min(dists[start_i:end_i])
+        min_dist_near, samples_near = best_slice
+        coords_near = [s[0] for s in samples_near]
+        if len(coords_near) < min_track_points:
+            continue
 
         # Median altitude from available samples (best-effort).
         median_alt_ft = None
+        alts_m = [s[2] for s in samples_near if s[2] is not None]
         if alts_m:
             # Remove obviously invalid values that show up as 0.0
             cleaned = [a for a in alts_m if a and a > 1.0]
@@ -820,8 +1185,8 @@ async def get_adsb_tracks_near_property(
 
         # Infer (when possible) whether this track is arriving/departing a NYC airport.
         # This is labeling only — geometry remains purely the real ADS-B polyline.
-        start_full = coords[0]
-        end_full = coords[-1]
+        start_full = samples[0][0]
+        end_full = samples[-1][0]
         start_ap = _nearest_airport(start_full)
         end_ap = _nearest_airport(end_full)
         airport_hint = ""
@@ -844,12 +1209,7 @@ async def get_adsb_tracks_near_property(
             pretty = f"Flight {icao24}"
 
         label = f"{pretty}{airport_hint} (closest {min_dist_near:.1f} mi)"
-        last_seen_ts = None
-        if times:
-            # Use the last timestamp that corresponds to the sliced segment, if possible.
-            times_near = times[start_i:end_i]
-            if times_near:
-                last_seen_ts = times_near[-1]
+        last_seen_ts = next((s[1] for s in reversed(samples_near) if s[1] is not None), None)
 
         out.append(
             FlightPath(
@@ -888,7 +1248,8 @@ async def get_flight_paths(
 
     - ``auto`` (default): polylines from Supabase ``adsb_samples`` when ingest has data;
       otherwise static NYC corridors. No OpenSky calls on this path.
-    - ``static``: simplified hand-authored corridor segments only.
+    - ``static``: simplified hand-authored corridor segments only — same “demo” dashed
+      straight segments (no per-aircraft tracks).
     - ``live_adsb``: capped OpenSky ``states`` + a few sequential ``tracks`` calls; falls
       back to static if empty or slow.
     - ``adsb`` is accepted as an alias for ``auto`` (legacy env files).
