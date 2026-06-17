@@ -420,13 +420,14 @@ Expected: `4` and a real venue name (not an error).
 | `ADSB_PATH_DAYS` | Optional. **1–14**, default **7**. How far back stored samples are queried for polylines. |
 | `ADSB_PATH_STABILITY_BUCKET_MINUTES` | Optional. **5–1440**, default **60**. Freezes stored path selection to completed time buckets so repeated scans of the same address do not rotate live aircraft every few seconds. |
 | `ADSB_PATH_STABILITY_LAG_MINUTES` | Optional. **0–1440**, default **0** in code; production currently uses **15**. Adds lag before the completed bucket cutoff so scans use fully-ingested data. |
-| `ADSB_PATH_BBOX_MILES` | Optional. **5–40**, default **22**. Bounding box half-extent around the property for the Supabase filter. |
+| `FLIGHT_PATH_MAX_RADIUS_MILES` | Optional. **1–25**, default **5**. Hide flight paths whose closest approach to the scanned address is farther than this. Also caps near-property track trimming. |
+| `ADSB_PATH_BBOX_MILES` | Optional. **5–40**, default **~8** (max radius + 2). Bounding box half-extent around the property for the Supabase filter. |
 | `ADSB_PATH_MIN_POINTS` | Optional. **5–20**, default **5**. Minimum raw samples per ICAO to include a track; output paths also preserve at least this many real vertices after cleanup. |
 | `ADSB_PATH_MAX_POINTS` | Optional. **8–80**, default **40**. Even decimation cap per aircraft before cleanup. |
 | `ADSB_PATH_ROW_LIMIT` | Optional. **2000–25000**, default **15000**. Max rows returned from `adsb_samples` for one scan’s query. |
 | `ADSB_PATH_MAX_GAP_MINUTES` | Optional. **20–720**, default **120**. Splits a stored ADS-B series when consecutive samples are too far apart in time, preventing separate flights with the same ICAO from being stitched into one line. |
 | `ADSB_PATH_BLIND_JUMP_MILES` | Optional. **0–200**, default **0**. When timestamps are missing, split a stored path if consecutive points jump farther than this many miles. `0` disables this missing-timestamp split. |
-| `ADSB_PATH_KEEP_NEAR_MILES` | Optional. **5–40**, default **18**. Keeps one contiguous pass near the scan address instead of drawing a long unrelated track segment. |
+| `ADSB_PATH_KEEP_NEAR_MILES` | Optional. **1–25**, default **5** (capped by `FLIGHT_PATH_MAX_RADIUS_MILES`). Keeps one contiguous pass near the scan address instead of drawing a long unrelated track segment. |
 | `ADSB_PATH_KEEP_PAD_POINTS` | Optional. **0–30**, default **6**. Adds context points before/after the near-property pass so tracks do not look abruptly clipped. |
 | `ADSB_PATH_SPIKE_MIN_TURN_DEG` | Optional. **90–175**, default **148**. Sharp-turn threshold for dropping tiny local zig-zag spikes from noisy ADS-B samples. |
 | `ADSB_PATH_SPIKE_MAX_LEG_MI` | Optional. **0–1**, default **0.22**. Only drop sharp turns when both nearby legs are short enough to look like local jitter. `0` disables spike removal. |

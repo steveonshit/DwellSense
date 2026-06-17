@@ -25,6 +25,14 @@ OPENSKY_PASSWORD = os.getenv("OPENSKY_PASSWORD", "")
 FLIGHT_MODE = (os.getenv("FLIGHT_MODE", "auto") or "auto").strip().lower()
 logger = logging.getLogger(__name__)
 
+
+def _flight_path_max_radius_miles() -> float:
+    """Closest-approach limit: flight paths farther than this from the scan address are hidden."""
+    try:
+        return max(1.0, min(25.0, float(os.getenv("FLIGHT_PATH_MAX_RADIUS_MILES", "5"))))
+    except ValueError:
+        return 5.0
+
 # Minimal airline mapping from common ICAO airline designators.
 ICAO_AIRLINE_NAMES = {
     "DAL": "Delta",
@@ -250,10 +258,12 @@ def _distance_point_to_segment_miles(point: Coordinate, start: Coordinate, end: 
 
 def get_nearest_flight_corridor(coord: Coordinate) -> FlightPath | None:
     """
-    Returns the nearest flight corridor within 3 miles of the address.
+    Returns the nearest flight corridor within the configured radius of the address.
     Returns None if the address is not under a flight path.
     """
-    paths = get_nearby_flight_corridors(coord, limit=1, max_distance_miles=3.0)
+    paths = get_nearby_flight_corridors(
+        coord, limit=1, max_distance_miles=_flight_path_max_radius_miles()
+    )
     return paths[0] if paths else None
 
 
@@ -261,15 +271,16 @@ def get_nearby_flight_corridors(
     coord: Coordinate,
     *,
     limit: int = 3,
-    max_distance_miles: float = 3.0,
+    max_distance_miles: float | None = None,
 ) -> list[FlightPath]:
     """
     Returns up to `limit` nearby corridors (nearest first) within `max_distance_miles`.
     """
+    radius = max_distance_miles if max_distance_miles is not None else _flight_path_max_radius_miles()
     scored: list[tuple[float, dict]] = []
     for corridor in NYC_FLIGHT_CORRIDORS:
         dist = _distance_point_to_segment_miles(coord, corridor["start"], corridor["end"])
-        if dist <= max_distance_miles:
+        if dist <= radius:
             scored.append((dist, corridor))
 
     scored.sort(key=lambda x: x[0])
@@ -575,7 +586,9 @@ def get_stored_sample_flight_paths(
     (trim to one near-property pass),
     ``ADSB_PATH_DEDUPE_MIN_SEP_MI``, ``ADSB_PATH_MAX_IMPLIED_MPH``, ``ADSB_PATH_BLIND_JUMP_MILES``,
     ``ADSB_PATH_DP_EPSILON_MILES``, ``ADSB_PATH_SMOOTH_PASSES``, ``ADSB_PATH_SPIKE_*`` (drop local multilateration zig-zags).
+    Paths whose closest approach exceeds ``FLIGHT_PATH_MAX_RADIUS_MILES`` (default 5 mi) are omitted.
     """
+    max_radius = _flight_path_max_radius_miles()
     try:
         days = max(1, min(14, int(os.getenv("ADSB_PATH_DAYS", "7"))))
     except ValueError:
@@ -589,9 +602,10 @@ def get_stored_sample_flight_paths(
     except ValueError:
         stability_lag_minutes = 0
     try:
-        bbox_radius = max(5.0, min(40.0, float(os.getenv("ADSB_PATH_BBOX_MILES", "22"))))
+        bbox_default = max(max_radius + 2.0, 8.0)
+        bbox_radius = max(max_radius, min(40.0, float(os.getenv("ADSB_PATH_BBOX_MILES", str(bbox_default)))))
     except ValueError:
-        bbox_radius = 22.0
+        bbox_radius = max(max_radius + 2.0, 8.0)
     try:
         min_points = max(5, min(20, int(os.getenv("ADSB_PATH_MIN_POINTS", "5"))))
     except ValueError:
@@ -625,9 +639,12 @@ def get_stored_sample_flight_paths(
     except ValueError:
         max_gap_minutes = 120.0
     try:
-        keep_near_miles = max(5.0, min(40.0, float(os.getenv("ADSB_PATH_KEEP_NEAR_MILES", "18"))))
+        keep_near_miles = max(1.0, min(
+            max_radius,
+            float(os.getenv("ADSB_PATH_KEEP_NEAR_MILES", str(max_radius))),
+        ))
     except ValueError:
-        keep_near_miles = 18.0
+        keep_near_miles = max_radius
     try:
         keep_pad_points = max(0, min(30, int(os.getenv("ADSB_PATH_KEEP_PAD_POINTS", "6"))))
     except ValueError:
@@ -820,7 +837,7 @@ def get_stored_sample_flight_paths(
 
             dists = [_haversine_miles(coord.lat, coord.lng, c.lat, c.lng) for c in coords]
             min_d = min(dists) if dists else 999.0
-            if min_d > min(bbox_radius * 0.85, 18.0):
+            if min_d > max_radius:
                 continue
 
             cand: tuple[float, str, list[Coordinate], list[float | None], int] = (
@@ -1012,8 +1029,8 @@ async def get_adsb_tracks_near_property(
     coord: Coordinate,
     *,
     limit: int = 3,
-    radius_miles: float = 25.0,
-    near_miles: float = 10.0,
+    radius_miles: float = 12.0,
+    near_miles: float = 5.0,
     max_tracks: int = 3,
 ) -> list[FlightPath]:
     """
@@ -1025,14 +1042,15 @@ async def get_adsb_tracks_near_property(
     - For the closest few ICAOs, fetch OpenSky `tracks/all` **sequentially** with a short
       per-request timeout so `/scan` does not fan out dozens of parallel calls.
     """
+    max_radius = _flight_path_max_radius_miles()
     try:
-        radius_miles = max(10.0, min(80.0, float(os.getenv("OPENSKY_STATE_BBOX_MILES", str(radius_miles)))))
+        radius_miles = max(max_radius + 2.0, min(80.0, float(os.getenv("OPENSKY_STATE_BBOX_MILES", str(radius_miles)))))
     except ValueError:
-        radius_miles = 25.0
+        radius_miles = max(max_radius + 2.0, 12.0)
     try:
-        near_miles = max(5.0, min(40.0, float(os.getenv("OPENSKY_NEAR_MILES", str(near_miles)))))
+        near_miles = max(1.0, min(max_radius, float(os.getenv("OPENSKY_NEAR_MILES", str(max_radius)))))
     except ValueError:
-        near_miles = 10.0
+        near_miles = max_radius
     try:
         max_tracks = max(1, min(5, int(os.getenv("OPENSKY_MAX_TRACK_FETCHES", str(max_tracks)))))
     except ValueError:
@@ -1148,9 +1166,9 @@ async def get_adsb_tracks_near_property(
         # OpenSky "tracks" can include points far away; we keep the contiguous pass
         # around the closest approach where the aircraft stays within `keep_miles`.
         try:
-            keep_miles = max(8.0, min(50.0, float(os.getenv("OPENSKY_TRACK_KEEP_MILES", "15"))))
+            keep_miles = max(1.0, min(max_radius, float(os.getenv("OPENSKY_TRACK_KEEP_MILES", str(max_radius)))))
         except ValueError:
-            keep_miles = 15.0
+            keep_miles = max_radius
         try:
             pad = max(0, min(60, int(os.getenv("OPENSKY_TRACK_PAD_POINTS", "6"))))
         except ValueError:
@@ -1203,6 +1221,8 @@ async def get_adsb_tracks_near_property(
             continue
 
         min_dist_near, samples_near = best_slice
+        if min_dist_near > max_radius:
+            continue
         coords_near = [s[0] for s in samples_near]
         if len(coords_near) < min_track_points:
             continue
@@ -1296,7 +1316,9 @@ async def get_flight_paths(
         mode = "auto"
 
     def static_paths() -> list[FlightPath]:
-        return get_nearby_flight_corridors(coord, limit=limit, max_distance_miles=3.0)
+        return get_nearby_flight_corridors(
+            coord, limit=limit, max_distance_miles=_flight_path_max_radius_miles()
+        )
 
     if mode == "static":
         return static_paths()
