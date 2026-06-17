@@ -4,6 +4,7 @@ import { useEffect, useRef, useCallback } from "react";
 import mapboxgl from "mapbox-gl";
 import { FlightExposure, MapData, LogisticsCard } from "@/lib/types";
 import { flightPathToLineLngLat, flightPathToRouteLatLng } from "@/lib/flightPathDisplay";
+import { scanRadiusPolygon } from "@/lib/scanRadiusCircle";
 
 mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || "";
 
@@ -15,6 +16,7 @@ const NYC_MAX_BOUNDS: mapboxgl.LngLatBoundsLike = [
 
 /** Minimum real ADS-B vertices required to render a track (matches backend ADSB_PATH_MIN_POINTS). */
 const MIN_FLIGHT_PATH_POINTS = 5;
+const DEFAULT_SCAN_RADIUS_MILES = 3;
 
 const SWARM_EMOJI: Record<string, string> = {
   police:       "🚓",
@@ -81,7 +83,9 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
     mapRef.current = map;
 
     map.on("load", () => {
+      upsertScanRadius(map);
       addZones(map);
+      addSwarm(map);
       addLogisticsPins(map);
       addTargetPin(map);
       const initialPaths = getFlightPaths();
@@ -240,16 +244,14 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mapData.target.lat, mapData.target.lng]);
 
-  // ── Refresh swarm pins when scan data changes ───────────────────────────────
+  // ── Update 2-mile search circle when scan center or radius changes ───────────
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
 
     const apply = () => {
       if (!map.isStyleLoaded()) return;
-      markersRef.current.forEach((m) => m.remove());
-      markersRef.current = [];
-      addSwarm(map);
+      upsertScanRadius(map);
     };
 
     if (!map.isStyleLoaded()) {
@@ -265,10 +267,14 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
     }
 
     apply();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mapData.swarm]);
+  }, [mapData.target.lat, mapData.target.lng, mapData.scan_radius_miles]);
 
   // ── Helpers ─────────────────────────────────────────────────────────────────
+
+  const getScanRadiusMiles = () =>
+    mapData.scan_radius_miles && mapData.scan_radius_miles > 0
+      ? mapData.scan_radius_miles
+      : DEFAULT_SCAN_RADIUS_MILES;
 
   /** Only observed ADS-B polylines — never heuristic corridor segments. */
   const getFlightPaths = () => {
@@ -278,6 +284,45 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
       if (p.source === "corridor") return false;
       const pts = p.path?.filter(Boolean) ?? [];
       return pts.length >= MIN_FLIGHT_PATH_POINTS;
+    });
+  };
+
+  const upsertScanRadius = (map: mapboxgl.Map) => {
+    const radiusMiles = getScanRadiusMiles();
+    const geometry = scanRadiusPolygon(
+      mapData.target.lat,
+      mapData.target.lng,
+      radiusMiles
+    );
+    const data: GeoJSON.Feature = {
+      type: "Feature",
+      properties: { radius_miles: radiusMiles },
+      geometry,
+    };
+
+    const existing = map.getSource("scan-radius") as mapboxgl.GeoJSONSource | undefined;
+    if (existing) {
+      existing.setData(data);
+      return;
+    }
+
+    map.addSource("scan-radius", { type: "geojson", data });
+    map.addLayer({
+      id: "scan-radius-fill",
+      type: "fill",
+      source: "scan-radius",
+      paint: { "fill-color": "#f43f5e", "fill-opacity": 0.09 },
+    });
+    map.addLayer({
+      id: "scan-radius-line",
+      type: "line",
+      source: "scan-radius",
+      paint: {
+        "line-color": "#fb7185",
+        "line-width": 2.5,
+        "line-dasharray": [2, 2],
+        "line-opacity": 0.9,
+      },
     });
   };
 
@@ -620,7 +665,7 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
           <span className="text-rose-500 animate-pulse">● Live Swarm</span>
         </h3>
         <span className="text-slate-400 text-[10px] font-bold bg-slate-900 px-3 py-1 rounded-full border border-slate-700 italic hidden md:block">
-          Scroll to zoom. Hover pins for details.
+          {getScanRadiusMiles()}-mile search radius · Each pin is a real NYC record · Scroll to zoom
         </span>
       </div>
 

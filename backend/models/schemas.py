@@ -93,7 +93,7 @@ class FlightExposure(BaseModel):
 
 class MapData(BaseModel):
     target: Coordinate
-    scan_radius_miles: float = 2.0
+    scan_radius_miles: float = 3.0
     zones: list[Zone]
     swarm: list[SwarmPin]
     # Multiple nearby corridors (nearest first). `flight_path` is kept for backwards compatibility.
