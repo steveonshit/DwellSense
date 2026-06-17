@@ -291,7 +291,6 @@ def get_nearby_flight_corridors(
                 start=corridor["start"],
                 end=corridor["end"],
                 label=f"{corridor['airport']} Corridor — {corridor['runway']} ({dist:.1f} mi)",
-                source="corridor",
             )
         )
     return out
@@ -878,7 +877,6 @@ def get_stored_sample_flight_paths(
                 start=coords[0],
                 end=coords[-1],
                 label=label,
-                source="adsb",
                 path=coords,
                 closest_miles=float(round(min_d, 2)),
                 median_altitude_ft=median_alt_ft,
@@ -1275,7 +1273,6 @@ async def get_adsb_tracks_near_property(
                 start=start,
                 end=end,
                 label=label,
-                source="adsb",
                 path=coords_near,
                 closest_miles=float(round(min_dist_near, 2)),
                 median_altitude_ft=median_alt_ft,
@@ -1306,21 +1303,25 @@ async def get_flight_paths(
     """
     Main entry point for scan pipeline.
 
-    - ``auto`` (default): polylines from Supabase ``adsb_samples`` when ingest has data.
-      Returns an empty list when no observed tracks qualify — never synthetic corridors.
-    - ``static``: simplified hand-authored corridor segments only (explicit demo mode).
-    - ``live_adsb``: capped OpenSky ``states`` + a few sequential ``tracks`` calls.
-      Returns empty when unavailable — no corridor fallback.
+    - ``auto`` (default): polylines from Supabase ``adsb_samples`` when ingest has data;
+      otherwise static NYC corridors. No OpenSky calls on this path.
+    - ``static``: simplified hand-authored corridor segments only — same “demo” dashed
+      straight segments (no per-aircraft tracks).
+    - ``live_adsb``: capped OpenSky ``states`` + a few sequential ``tracks`` calls; falls
+      back to static if empty or slow.
     - ``adsb`` is accepted as an alias for ``auto`` (legacy env files).
     """
     mode = (FLIGHT_MODE or "auto").strip().lower()
     if mode == "adsb":
         mode = "auto"
 
-    if mode == "static":
+    def static_paths() -> list[FlightPath]:
         return get_nearby_flight_corridors(
             coord, limit=limit, max_distance_miles=_flight_path_max_radius_miles()
         )
+
+    if mode == "static":
+        return static_paths()
 
     if mode == "auto":
         try:
@@ -1330,9 +1331,9 @@ async def get_flight_paths(
             paths = []
         if paths:
             logger.info("flight paths: returning %d stored-sample track(s)", len(paths))
-        else:
-            logger.info("flight paths: no qualifying stored ADS-B tracks in window")
-        return paths
+            return paths
+        logger.info("flight paths: no stored samples in window — static corridors")
+        return static_paths()
 
     if mode == "live_adsb":
         try:
@@ -1346,23 +1347,22 @@ async def get_flight_paths(
                 timeout=budget,
             )
         except asyncio.TimeoutError:
-            logger.warning("live OpenSky flight path fetch exceeded %.0fs", budget)
+            logger.warning("live OpenSky flight path fetch exceeded %.0fs — static fallback", budget)
             paths = []
         except Exception:
             logger.exception("live OpenSky flight paths failed")
             paths = []
         if paths:
             logger.info("live ADS-B: returning %d track(s)", len(paths))
-        else:
-            logger.info("live ADS-B: no qualifying tracks")
-        return paths
+            return paths
+        return static_paths()
 
     logger.warning("unknown FLIGHT_MODE=%s — using auto", FLIGHT_MODE)
     try:
         paths = await asyncio.to_thread(get_stored_sample_flight_paths, coord, limit=limit)
     except Exception:
         paths = []
-    return paths
+    return paths if paths else static_paths()
 
 
 async def get_live_plane_position(

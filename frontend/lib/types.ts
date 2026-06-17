@@ -73,8 +73,6 @@ export interface FlightPath {
   start: Coordinate;
   end: Coordinate;
   label: string;
-  /** ``adsb`` = observed track; ``corridor`` = heuristic segment (never shown in production UI). */
-  source?: "adsb" | "corridor" | null;
   /** Optional polyline points (ADS‑B tracks). */
   path?: Coordinate[] | null;
   closest_miles?: number | null;
@@ -96,7 +94,6 @@ export interface FlightExposure {
 
 export interface MapData {
   target: Coordinate;
-  scan_radius_miles?: number;
   zones: Zone[];
   swarm: SwarmPin[];
   flight_paths?: FlightPath[];
