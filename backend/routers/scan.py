@@ -72,7 +72,7 @@ async def scan(request: ScanRequest):
         dining_task,
     )
 
-    # Tighten spatial accuracy: bbox queries are a prefilter; scoring should reflect a true ~1mi radius.
+    # Bbox queries are a prefilter; scoring uses a true 2mi Haversine radius by default.
     crime_capped = len(crime) >= CRIME_FETCH_LIMIT
     reports_capped = len(reports_311) >= REPORTS_FETCH_LIMIT
     permits_capped = len(permits) >= PERMITS_FETCH_LIMIT
