@@ -17,13 +17,22 @@ import math
 
 logger = logging.getLogger(__name__)
 
-# Bounding box prefilter for the true ~1 mile search radius below.
-LAT_DELTA = 0.014
-LNG_DELTA = 0.020
 
-# True radius filter after bbox prefilter (matches "~1 mile" copy in UI/scoring)
-RADIUS_MILES = 1.0
-RADIUS_METERS = RADIUS_MILES * 1609.344
+def get_scan_radius_miles() -> float:
+    """True Haversine search radius for crime / 311 / permits / evictions (address at center)."""
+    try:
+        return max(0.25, min(10.0, float(os.getenv("SCAN_RADIUS_MILES", "2"))))
+    except ValueError:
+        return 2.0
+
+
+def get_scan_radius_meters() -> float:
+    return get_scan_radius_miles() * 1609.344
+
+
+# Legacy alias — prefer get_scan_radius_miles() per request.
+RADIUS_MILES = get_scan_radius_miles()
+RADIUS_METERS = get_scan_radius_meters()
 
 # Intended recency windows (must match how we describe scoring/UI)
 CRIME_DAYS_BACK = 30
@@ -32,11 +41,11 @@ PERMIT_DAYS_BACK = 90
 EVICTION_DAYS_BACK = 180
 
 # Socrata/Supabase fetch caps (used to detect truncated samples).
-# 1mi radius is 4x the old 0.5mi area, so caps are raised to avoid premature truncation.
-CRIME_FETCH_LIMIT = 800
-REPORTS_FETCH_LIMIT = 1200
-PERMITS_FETCH_LIMIT = 800
-EVICTIONS_FETCH_LIMIT = 400
+# 2mi radius is 4x the 1mi area; caps are raised to reduce premature truncation.
+CRIME_FETCH_LIMIT = 1200
+REPORTS_FETCH_LIMIT = 1800
+PERMITS_FETCH_LIMIT = 1200
+EVICTIONS_FETCH_LIMIT = 600
 
 # NYC Open Data (Socrata) base URL
 SOCRATA_BASE = "https://data.cityofnewyork.us/resource"
@@ -121,11 +130,14 @@ def _get_client() -> Client:
 
 
 def _bbox(coord: Coordinate) -> dict:
+    radius = get_scan_radius_miles()
+    lat_delta = radius / 69.0
+    lng_delta = radius / (69.0 * max(0.2, math.cos(math.radians(coord.lat))))
     return {
-        "lat_min": coord.lat - LAT_DELTA,
-        "lat_max": coord.lat + LAT_DELTA,
-        "lng_min": coord.lng - LNG_DELTA,
-        "lng_max": coord.lng + LNG_DELTA,
+        "lat_min": coord.lat - lat_delta,
+        "lat_max": coord.lat + lat_delta,
+        "lng_min": coord.lng - lng_delta,
+        "lng_max": coord.lng + lng_delta,
     }
 
 
@@ -153,9 +165,10 @@ def filter_rows_within_radius(
     coord: Coordinate,
     rows: list[dict],
     *,
-    radius_meters: float = RADIUS_METERS,
+    radius_meters: float | None = None,
 ) -> list[dict]:
     """Keep rows with valid lat/lng within radius_meters of coord."""
+    limit_m = radius_meters if radius_meters is not None else get_scan_radius_meters()
     out: list[dict] = []
     for row in rows:
         try:
@@ -165,7 +178,7 @@ def filter_rows_within_radius(
             continue
         if not lat or not lng:
             continue
-        if _haversine_meters(coord.lat, coord.lng, lat, lng) <= radius_meters:
+        if _haversine_meters(coord.lat, coord.lng, lat, lng) <= limit_m:
             out.append(row)
     return out
 

@@ -9,6 +9,8 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from services import city_data
+
 # Order matches the UI carousel / original Gemini system prompt.
 CARD_SPECS: list[dict[str, Any]] = [
     {
@@ -164,9 +166,11 @@ def compute_risk_from_counts(
     if capped:
         suffix_parts.append("Counts may be capped by our data sample limits in very dense areas.")
 
+    scan_mi = city_data.get_scan_radius_miles()
     risk_description = (
         f"Analysis based on {crime_count} crime reports, {reports_count} 311 calls, "
-        f"{permit_count} active permits, and {eviction_count} eviction filings within ~1 mile."
+        f"{permit_count} active permits, and {eviction_count} eviction filings "
+        f"within ~{scan_mi:g} miles."
         + (" " + " ".join(suffix_parts) if suffix_parts else "")
     )
 

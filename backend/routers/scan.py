@@ -72,7 +72,7 @@ async def scan(request: ScanRequest):
         dining_task,
     )
 
-    # Tighten spatial accuracy: bbox queries are a prefilter; scoring should reflect a true ~1mi radius.
+    # Tighten spatial accuracy: bbox queries are a prefilter; scoring uses a true 2mi radius by default.
     crime_capped = len(crime) >= CRIME_FETCH_LIMIT
     reports_capped = len(reports_311) >= REPORTS_FETCH_LIMIT
     permits_capped = len(permits) >= PERMITS_FETCH_LIMIT
@@ -92,6 +92,7 @@ async def scan(request: ScanRequest):
     swarm = city_data.build_swarm(crime, reports_311, permits)
     map_data = MapData(
         target=coord,
+        scan_radius_miles=city_data.get_scan_radius_miles(),
         zones=zones,
         swarm=swarm,
         flight_paths=flight_paths,

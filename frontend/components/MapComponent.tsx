@@ -4,6 +4,7 @@ import { useEffect, useRef, useCallback } from "react";
 import mapboxgl from "mapbox-gl";
 import { FlightExposure, MapData, LogisticsCard } from "@/lib/types";
 import { flightPathToLineLngLat, flightPathToRouteLatLng } from "@/lib/flightPathDisplay";
+import { scanRadiusPolygon, scanRadiusBounds } from "@/lib/scanRadiusCircle";
 
 mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || "";
 
@@ -15,6 +16,7 @@ const NYC_MAX_BOUNDS: mapboxgl.LngLatBoundsLike = [
 
 /** Minimum real ADS-B vertices required to render a track (matches backend ADSB_PATH_MIN_POINTS). */
 const MIN_FLIGHT_PATH_POINTS = 5;
+const DEFAULT_SCAN_RADIUS_MILES = 2;
 
 const SWARM_EMOJI: Record<string, string> = {
   police:       "🚓",
@@ -71,7 +73,7 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
       container: containerRef.current,
       style: "mapbox://styles/mapbox/dark-v11",
       center: [mapData.target.lng, mapData.target.lat],
-      zoom: 14,
+      zoom: 12.8,
       scrollZoom: true,
       maxBounds: NYC_MAX_BOUNDS,
       minZoom: 10.5,
@@ -81,6 +83,8 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
     mapRef.current = map;
 
     map.on("load", () => {
+      upsertScanRadius(map);
+      fitScanRadiusView(map);
       addZones(map);
       addSwarm(map);
       addLogisticsPins(map);
@@ -241,12 +245,103 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mapData.target.lat, mapData.target.lng]);
 
+  // ── Update 2-mile search circle when scan center or radius changes ───────────
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    const apply = () => {
+      if (!map.isStyleLoaded()) return;
+      upsertScanRadius(map);
+      fitScanRadiusView(map);
+    };
+
+    if (!map.isStyleLoaded()) {
+      const onIdle = () => {
+        if (!map.isStyleLoaded()) return;
+        map.off("idle", onIdle);
+        apply();
+      };
+      map.on("idle", onIdle);
+      return () => {
+        map.off("idle", onIdle);
+      };
+    }
+
+    apply();
+  }, [mapData.target.lat, mapData.target.lng, mapData.scan_radius_miles]);
+
   // ── Helpers ─────────────────────────────────────────────────────────────────
 
+  const getScanRadiusMiles = () =>
+    mapData.scan_radius_miles && mapData.scan_radius_miles > 0
+      ? mapData.scan_radius_miles
+      : DEFAULT_SCAN_RADIUS_MILES;
+
+  /** Only observed ADS-B polylines — never heuristic corridor segments. */
   const getFlightPaths = () => {
-    const paths = mapData.flight_paths?.filter(Boolean) ?? [];
-    if (paths.length) return paths;
-    return mapData.flight_path ? [mapData.flight_path] : [];
+    const raw = mapData.flight_paths?.filter(Boolean) ?? [];
+    const paths = raw.length ? raw : mapData.flight_path ? [mapData.flight_path] : [];
+    return paths.filter((p) => {
+      if (p.source === "corridor") return false;
+      const pts = p.path?.filter(Boolean) ?? [];
+      return pts.length >= MIN_FLIGHT_PATH_POINTS;
+    });
+  };
+
+  const fitScanRadiusView = (map: mapboxgl.Map) => {
+    const radiusMiles = getScanRadiusMiles();
+    const [[swLng, swLat], [neLng, neLat]] = scanRadiusBounds(
+      mapData.target.lat,
+      mapData.target.lng,
+      radiusMiles
+    );
+    map.fitBounds(
+      [
+        [swLng, swLat],
+        [neLng, neLat],
+      ],
+      { padding: 48, maxZoom: 13.8, duration: 0 }
+    );
+  };
+
+  const upsertScanRadius = (map: mapboxgl.Map) => {
+    const radiusMiles = getScanRadiusMiles();
+    const geometry = scanRadiusPolygon(
+      mapData.target.lat,
+      mapData.target.lng,
+      radiusMiles
+    );
+    const data: GeoJSON.Feature = {
+      type: "Feature",
+      properties: { radius_miles: radiusMiles },
+      geometry,
+    };
+
+    const existing = map.getSource("scan-radius") as mapboxgl.GeoJSONSource | undefined;
+    if (existing) {
+      existing.setData(data);
+      return;
+    }
+
+    map.addSource("scan-radius", { type: "geojson", data });
+    map.addLayer({
+      id: "scan-radius-fill",
+      type: "fill",
+      source: "scan-radius",
+      paint: { "fill-color": "#f43f5e", "fill-opacity": 0.09 },
+    });
+    map.addLayer({
+      id: "scan-radius-line",
+      type: "line",
+      source: "scan-radius",
+      paint: {
+        "line-color": "#fb7185",
+        "line-width": 2.5,
+        "line-dasharray": [2, 2],
+        "line-opacity": 0.9,
+      },
+    });
   };
 
   const formatSeenAgo = (isoUtc: string) => {
@@ -462,18 +557,10 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
     const existing = map.getSource("flight-paths") as mapboxgl.GeoJSONSource | undefined;
     if (existing) {
       existing.setData(data);
-      const hasRealTracks = paths.some((p) => (p.path?.length ?? 0) >= MIN_FLIGHT_PATH_POINTS);
-      const dash = hasRealTracks ? null : ([2, 3] as [number, number]);
-      map.setPaintProperty("flight-paths-line", "line-dasharray", dash as unknown as number[]);
-      if (map.getLayer("flight-paths-glow")) {
-        map.setPaintProperty("flight-paths-glow", "line-dasharray", dash as unknown as number[]);
-      }
       return;
     }
 
     map.addSource("flight-paths", { type: "geojson", data });
-    const hasRealTracks = paths.some((p) => (p.path?.length ?? 0) >= MIN_FLIGHT_PATH_POINTS);
-    const dashPaint = hasRealTracks ? {} : { "line-dasharray": [2, 3] as [number, number] };
     const lineLayout = { "line-cap": "round" as const, "line-join": "round" as const };
 
     map.addLayer({
@@ -486,7 +573,6 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
         "line-width": 11,
         "line-opacity": 0.2,
         "line-blur": 2.5,
-        ...dashPaint,
       },
     });
     map.addLayer({
@@ -497,7 +583,6 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
       paint: {
         "line-color": "#06b6d4",
         "line-width": 3,
-        ...dashPaint,
         "line-opacity": 0.88,
       },
     });
@@ -598,7 +683,7 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
           <span className="text-rose-500 animate-pulse">● Live Swarm</span>
         </h3>
         <span className="text-slate-400 text-[10px] font-bold bg-slate-900 px-3 py-1 rounded-full border border-slate-700 italic hidden md:block">
-          Scroll to zoom. Hover pins for details.
+          {getScanRadiusMiles()}-mile search radius · Scroll to zoom · Hover pins for details
         </span>
       </div>
 
@@ -698,7 +783,7 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
 
       {getFlightPaths().some((p) => (p.path?.length ?? 0) >= MIN_FLIGHT_PATH_POINTS) && (
         <div className="mt-2 px-2 text-[10px] md:text-[11px] font-bold text-slate-500">
-          Live flight tracks use real ADS-B observations (min {MIN_FLIGHT_PATH_POINTS} points per path); cyan dots mark each observed position.
+          Flight tracks are observed ADS-B positions only (min {MIN_FLIGHT_PATH_POINTS} points per path). Cyan dots mark each recorded position. Count varies with recent traffic — synthetic corridors are never shown.
         </div>
       )}
     </div>

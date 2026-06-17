@@ -65,6 +65,8 @@ class FlightPath(BaseModel):
     start: Coordinate
     end: Coordinate
     label: str
+    # ``adsb`` = observed positions; ``corridor`` = heuristic only (static mode).
+    source: Literal["adsb", "corridor"] | None = None
     # Optional polyline for "real" tracks (ADS-B), ordered points.
     path: list[Coordinate] | None = None
     # Optional per-track stats (best-effort).
@@ -91,6 +93,7 @@ class FlightExposure(BaseModel):
 
 class MapData(BaseModel):
     target: Coordinate
+    scan_radius_miles: float = 2.0
     zones: list[Zone]
     swarm: list[SwarmPin]
     # Multiple nearby corridors (nearest first). `flight_path` is kept for backwards compatibility.
