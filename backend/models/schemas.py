@@ -22,6 +22,20 @@ class LogisticsCard(BaseModel):
     coordinates: Coordinate
 
 
+class RestaurantBarCard(BaseModel):
+    name: str
+    category: str
+    rating: float | None = None
+    review_count: int | None = None
+    price_level: str | None = None
+    distance_value: float
+    distance_unit: Literal["feet", "miles"]
+    coordinates: Coordinate
+    source: Literal["yelp", "google_places"]
+    url: str | None = None
+    ranking_score: float | None = None
+
+
 class ThreatCard(BaseModel):
     id: str
     emoji: str
@@ -93,6 +107,7 @@ class ScanResponse(BaseModel):
     risk_label: str
     risk_description: str
     logistics: list[LogisticsCard]
+    dining: list[RestaurantBarCard] = []
     threat_cards: list[ThreatCard]
     map_data: MapData
     flight_exposure: FlightExposure | None = None

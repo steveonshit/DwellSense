@@ -14,6 +14,20 @@ export interface LogisticsCard {
   coordinates: Coordinate;
 }
 
+export interface RestaurantBarCard {
+  name: string;
+  category: string;
+  rating?: number | null;
+  review_count?: number | null;
+  price_level?: string | null;
+  distance_value: number;
+  distance_unit: "feet" | "miles";
+  coordinates: Coordinate;
+  source: "yelp" | "google_places";
+  url?: string | null;
+  ranking_score?: number | null;
+}
+
 export interface ThreatCard {
   id: string;
   emoji: string;
@@ -92,6 +106,7 @@ export interface ScanResult {
   risk_label: string;
   risk_description: string;
   logistics: LogisticsCard[];
+  dining?: RestaurantBarCard[];
   threat_cards: ThreatCard[];
   map_data: MapData;
   flight_exposure?: FlightExposure | null;

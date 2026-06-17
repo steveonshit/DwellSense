@@ -6,7 +6,7 @@ Takes an address, runs all data lookups in parallel, and returns the full ScanRe
 import asyncio
 import logging
 from fastapi import APIRouter, HTTPException
-from models.schemas import ScanRequest, ScanResponse, MapData, ThreatCard, LogisticsCard
+from models.schemas import ScanRequest, ScanResponse, MapData, ThreatCard
 from services import geocoding, city_data, places, flights, ai_analysis, flight_exposure
 from services.threat_card_layout import cards_from_specs_and_bullets, ordered_card_ids
 from services.city_data import (
@@ -61,13 +61,15 @@ async def scan(request: ScanRequest):
     permits_task = city_data.get_nearby_permits(coord)
     evictions_task = city_data.get_nearby_evictions(coord)
     logistics_task = places.get_logistics(coord)
+    dining_task = places.get_top_restaurants_bars(coord, limit=4)
 
-    crime, reports_311, permits, evictions, logistics = await asyncio.gather(
+    crime, reports_311, permits, evictions, logistics, dining = await asyncio.gather(
         crime_task,
         reports_311_task,
         permits_task,
         evictions_task,
         logistics_task,
+        dining_task,
     )
 
     # Tighten spatial accuracy: bbox queries are a prefilter; scoring should reflect a true ~1mi radius.
@@ -168,6 +170,7 @@ async def scan(request: ScanRequest):
         risk_label=f"{risk_emoji_map.get(risk_level, '⚠️')} {ai_result.get('risk_label', risk_level + ' RISK')}",
         risk_description=ai_result.get("risk_description", ""),
         logistics=logistics,
+        dining=dining,
         threat_cards=threat_cards,
         map_data=map_data,
         flight_exposure=flight_exposure.compute_exposure(coord),

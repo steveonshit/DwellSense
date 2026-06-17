@@ -5,6 +5,7 @@ import dynamic from "next/dynamic";
 import { ScanResult } from "@/lib/types";
 import DangerBanner from "./DangerBanner";
 import LogisticsCarousel from "./LogisticsCarousel";
+import TopDiningCarousel from "./TopDiningCarousel";
 import ThreatCarousel from "./ThreatCarousel";
 import SideAds from "./SideAds";
 
@@ -58,6 +59,8 @@ export default function ResultsDashboard({ result, onReset }: Props) {
           cards={result.logistics}
           onHoverCard={handleHoverCard}
         />
+
+        <TopDiningCarousel cards={result.dining || []} />
 
         <MapComponent
           mapData={result.map_data}
