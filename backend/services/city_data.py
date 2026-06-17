@@ -21,9 +21,9 @@ logger = logging.getLogger(__name__)
 def get_scan_radius_miles() -> float:
     """True Haversine search radius for crime / 311 / permits / evictions (address at center)."""
     try:
-        return max(0.25, min(10.0, float(os.getenv("SCAN_RADIUS_MILES", "3"))))
+        return max(0.25, min(10.0, float(os.getenv("SCAN_RADIUS_MILES", "2"))))
     except ValueError:
-        return 3.0
+        return 2.0
 
 
 def get_scan_radius_meters() -> float:
@@ -530,107 +530,34 @@ def _classify_311(row: dict) -> tuple[str, str]:
     return "report", f"311: {complaint_type}"
 
 
-def _coord_key(row: dict, decimals: int = 5) -> tuple[float, float]:
-    return (round(float(row["lat"]), decimals), round(float(row["lng"]), decimals))
-
-
-def _dedupe_rows_by_coord(rows: list[dict]) -> list[dict]:
-    """One row per map coordinate — avoids stacked pins at identical NYC geocode centroids."""
-    seen: set[tuple[float, float]] = set()
-    out: list[dict] = []
-    for row in rows:
-        if not row.get("lat") or not row.get("lng"):
-            continue
-        try:
-            key = _coord_key(row)
-        except (TypeError, ValueError):
-            continue
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(row)
-    return out
-
-
-def _select_spatially_diverse(
-    rows: list[dict],
-    center: Coordinate,
-    limit: int,
-) -> list[dict]:
-    """
-    Pick up to `limit` real rows spread around the scan center (bearing sectors).
-    Prevents the map from showing a tight line/cluster when the DB returns rows in time order.
-    """
-    rows = _dedupe_rows_by_coord(rows)
-    if limit <= 0 or not rows:
-        return []
-    if len(rows) <= limit:
-        return rows
-
-    sectors = min(limit, 12)
-    buckets: list[list[dict]] = [[] for _ in range(sectors)]
-    clat = math.radians(center.lat)
-    clng = math.radians(center.lng)
-
-    for row in rows:
-        lat = float(row["lat"])
-        lng = float(row["lng"])
-        rlat = math.radians(lat)
-        dlng = math.radians(lng) - clng
-        y = math.sin(dlng) * math.cos(rlat)
-        x = math.cos(clat) * math.sin(rlat) - math.sin(clat) * math.cos(rlat) * math.cos(dlng)
-        bearing = math.atan2(y, x)
-        idx = int((bearing + math.pi) / (2 * math.pi) * sectors) % sectors
-        buckets[idx].append(row)
-
-    per_sector = max(1, (limit + sectors - 1) // sectors)
-    out: list[dict] = []
-    for bucket in buckets:
-        for row in bucket[:per_sector]:
-            out.append(row)
-            if len(out) >= limit:
-                return out
-    return out[:limit]
-
-
-def build_swarm(
-    crime: list[dict],
-    reports_311: list[dict],
-    permits: list[dict],
-    center: Coordinate,
-) -> list[SwarmPin]:
-    """Builds map pins from real municipal rows, spread across the scan radius."""
+def build_swarm(crime: list[dict], reports_311: list[dict], permits: list[dict]) -> list[SwarmPin]:
+    """Builds a diverse micro-pin swarm for the map (max 100 pins total)."""
     swarm: list[SwarmPin] = []
 
-    for row in _select_spatially_diverse(crime, center, 30):
-        swarm.append(SwarmPin(
-            lat=row["lat"], lng=row["lng"],
-            type="police",
-            label=f"NYPD: {row.get('crime_type', 'Police Activity')}",
-        ))
+    # Crime pins — up to 30
+    for row in crime[:30]:
+        if row.get("lat") and row.get("lng"):
+            swarm.append(SwarmPin(
+                lat=row["lat"], lng=row["lng"],
+                type="police",
+                label=f"NYPD: {row.get('crime_type', 'Police Activity')}",
+            ))
 
-    by_type: dict[str, list[dict]] = {}
+    # 311 pins — categorized, up to 50 total, max 15 per type
+    type_counts: dict[str, int] = {}
     for row in reports_311:
         if not row.get("lat") or not row.get("lng"):
             continue
-        pin_type, _ = _classify_311(row)
-        by_type.setdefault(pin_type, []).append(row)
-
-    type_counts: dict[str, int] = {}
-    for pin_type in sorted(by_type.keys()):
-        cap = 15
-        for row in _select_spatially_diverse(by_type[pin_type], center, cap):
-            if type_counts.get(pin_type, 0) >= cap:
-                break
-            _, label = _classify_311(row)
-            type_counts[pin_type] = type_counts.get(pin_type, 0) + 1
-            swarm.append(SwarmPin(lat=row["lat"], lng=row["lng"], type=pin_type, label=label))
-            if sum(type_counts.values()) >= 50:
-                break
+        pin_type, label = _classify_311(row)
+        if type_counts.get(pin_type, 0) >= 15:
+            continue
+        type_counts[pin_type] = type_counts.get(pin_type, 0) + 1
+        swarm.append(SwarmPin(lat=row["lat"], lng=row["lng"], type=pin_type, label=label))
         if sum(type_counts.values()) >= 50:
             break
 
-    for row in _select_spatially_diverse(permits, center, 20):
+    # Permit pins — up to 20
+    for row in permits[:20]:
         if row.get("lat") and row.get("lng"):
             swarm.append(SwarmPin(
                 lat=row["lat"], lng=row["lng"],

@@ -84,12 +84,12 @@ async def scan(request: ScanRequest):
     evictions = city_data.filter_rows_within_radius(coord, evictions)
 
     # ── 3. Flight corridors (ADS-B or static) ────────────────────────────────
-    flight_paths = await flights.get_flight_paths(coord, limit=2)
+    flight_paths = await flights.get_flight_paths(coord, limit=3)
     flight_path = flight_paths[0] if flight_paths else None
 
     # ── 4. Build map data ────────────────────────────────────────────────────
     zones = city_data.build_zones(crime, reports_311, permits)
-    swarm = city_data.build_swarm(crime, reports_311, permits, coord)
+    swarm = city_data.build_swarm(crime, reports_311, permits)
     map_data = MapData(
         target=coord,
         scan_radius_miles=city_data.get_scan_radius_miles(),

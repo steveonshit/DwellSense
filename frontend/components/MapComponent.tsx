@@ -4,7 +4,7 @@ import { useEffect, useRef, useCallback } from "react";
 import mapboxgl from "mapbox-gl";
 import { FlightExposure, MapData, LogisticsCard } from "@/lib/types";
 import { flightPathToLineLngLat, flightPathToRouteLatLng } from "@/lib/flightPathDisplay";
-import { scanRadiusPolygon } from "@/lib/scanRadiusCircle";
+import { scanRadiusPolygon, scanRadiusBounds } from "@/lib/scanRadiusCircle";
 
 mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || "";
 
@@ -16,7 +16,7 @@ const NYC_MAX_BOUNDS: mapboxgl.LngLatBoundsLike = [
 
 /** Minimum real ADS-B vertices required to render a track (matches backend ADSB_PATH_MIN_POINTS). */
 const MIN_FLIGHT_PATH_POINTS = 5;
-const DEFAULT_SCAN_RADIUS_MILES = 3;
+const DEFAULT_SCAN_RADIUS_MILES = 2;
 
 const SWARM_EMOJI: Record<string, string> = {
   police:       "🚓",
@@ -73,7 +73,7 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
       container: containerRef.current,
       style: "mapbox://styles/mapbox/dark-v11",
       center: [mapData.target.lng, mapData.target.lat],
-      zoom: 14,
+      zoom: 12.8,
       scrollZoom: true,
       maxBounds: NYC_MAX_BOUNDS,
       minZoom: 10.5,
@@ -84,6 +84,7 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
 
     map.on("load", () => {
       upsertScanRadius(map);
+      fitScanRadiusView(map);
       addZones(map);
       addSwarm(map);
       addLogisticsPins(map);
@@ -252,6 +253,7 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
     const apply = () => {
       if (!map.isStyleLoaded()) return;
       upsertScanRadius(map);
+      fitScanRadiusView(map);
     };
 
     if (!map.isStyleLoaded()) {
@@ -285,6 +287,22 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
       const pts = p.path?.filter(Boolean) ?? [];
       return pts.length >= MIN_FLIGHT_PATH_POINTS;
     });
+  };
+
+  const fitScanRadiusView = (map: mapboxgl.Map) => {
+    const radiusMiles = getScanRadiusMiles();
+    const [[swLng, swLat], [neLng, neLat]] = scanRadiusBounds(
+      mapData.target.lat,
+      mapData.target.lng,
+      radiusMiles
+    );
+    map.fitBounds(
+      [
+        [swLng, swLat],
+        [neLng, neLat],
+      ],
+      { padding: 48, maxZoom: 13.8, duration: 0 }
+    );
   };
 
   const upsertScanRadius = (map: mapboxgl.Map) => {
@@ -665,7 +683,7 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
           <span className="text-rose-500 animate-pulse">● Live Swarm</span>
         </h3>
         <span className="text-slate-400 text-[10px] font-bold bg-slate-900 px-3 py-1 rounded-full border border-slate-700 italic hidden md:block">
-          {getScanRadiusMiles()}-mile search radius · Each pin is a real NYC record · Scroll to zoom
+          {getScanRadiusMiles()}-mile search radius · Scroll to zoom · Hover pins for details
         </span>
       </div>
 
