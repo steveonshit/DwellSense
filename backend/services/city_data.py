@@ -21,9 +21,9 @@ logger = logging.getLogger(__name__)
 def get_scan_radius_miles() -> float:
     """True Haversine search radius for crime / 311 / permits / evictions (address at center)."""
     try:
-        return max(0.25, min(10.0, float(os.getenv("SCAN_RADIUS_MILES", "3"))))
+        return max(0.25, min(10.0, float(os.getenv("SCAN_RADIUS_MILES", "2"))))
     except ValueError:
-        return 3.0
+        return 2.0
 
 
 def get_scan_radius_meters() -> float:
@@ -556,10 +556,12 @@ def _select_spatially_diverse(
     rows: list[dict],
     center: Coordinate,
     limit: int,
+    *,
+    radius_miles: float | None = None,
 ) -> list[dict]:
     """
-    Pick up to `limit` real rows spread around the scan center (bearing sectors).
-    Prevents the map from showing a tight line/cluster when the DB returns rows in time order.
+    Pick up to `limit` real rows spread across a 2-D grid inside the scan disk.
+    Avoids a single corridor/line of pins when the DB returns rows in time order.
     """
     rows = _dedupe_rows_by_coord(rows)
     if limit <= 0 or not rows:
@@ -567,29 +569,42 @@ def _select_spatially_diverse(
     if len(rows) <= limit:
         return rows
 
-    sectors = min(limit, 12)
-    buckets: list[list[dict]] = [[] for _ in range(sectors)]
-    clat = math.radians(center.lat)
-    clng = math.radians(center.lng)
+    r_mi = radius_miles if radius_miles is not None else get_scan_radius_miles()
+    lat_scale = r_mi / 69.0
+    lng_scale = r_mi / (69.0 * max(0.2, math.cos(math.radians(center.lat))))
+    grid = 7
+    buckets: dict[tuple[int, int], list[dict]] = {}
 
     for row in rows:
         lat = float(row["lat"])
         lng = float(row["lng"])
-        rlat = math.radians(lat)
-        dlng = math.radians(lng) - clng
-        y = math.sin(dlng) * math.cos(rlat)
-        x = math.cos(clat) * math.sin(rlat) - math.sin(clat) * math.cos(rlat) * math.cos(dlng)
-        bearing = math.atan2(y, x)
-        idx = int((bearing + math.pi) / (2 * math.pi) * sectors) % sectors
-        buckets[idx].append(row)
+        dy = (lat - center.lat) / lat_scale if lat_scale else 0.0
+        dx = (lng - center.lng) / lng_scale if lng_scale else 0.0
+        if dx * dx + dy * dy > 1.05:
+            continue
+        ci = max(0, min(grid - 1, int((dx + 1) * 0.5 * grid)))
+        cj = max(0, min(grid - 1, int((dy + 1) * 0.5 * grid)))
+        buckets.setdefault((ci, cj), []).append(row)
 
-    per_sector = max(1, (limit + sectors - 1) // sectors)
+    def _dist(row: dict) -> float:
+        return _haversine_meters(center.lat, center.lng, float(row["lat"]), float(row["lng"]))
+
     out: list[dict] = []
-    for bucket in buckets:
-        for row in bucket[:per_sector]:
+    for cell_rows in buckets.values():
+        out.append(min(cell_rows, key=_dist))
+
+    if len(out) < limit:
+        seen = {_coord_key(r) for r in out}
+        for row in sorted(rows, key=_dist):
+            key = _coord_key(row)
+            if key in seen:
+                continue
+            seen.add(key)
             out.append(row)
             if len(out) >= limit:
-                return out
+                break
+
+    out.sort(key=_dist)
     return out[:limit]
 
 
@@ -600,9 +615,10 @@ def build_swarm(
     center: Coordinate,
 ) -> list[SwarmPin]:
     """Builds map pins from real municipal rows, spread across the scan radius."""
+    radius = get_scan_radius_miles()
     swarm: list[SwarmPin] = []
 
-    for row in _select_spatially_diverse(crime, center, 30):
+    for row in _select_spatially_diverse(crime, center, 30, radius_miles=radius):
         swarm.append(SwarmPin(
             lat=row["lat"], lng=row["lng"],
             type="police",
@@ -619,7 +635,7 @@ def build_swarm(
     type_counts: dict[str, int] = {}
     for pin_type in sorted(by_type.keys()):
         cap = 15
-        for row in _select_spatially_diverse(by_type[pin_type], center, cap):
+        for row in _select_spatially_diverse(by_type[pin_type], center, cap, radius_miles=radius):
             if type_counts.get(pin_type, 0) >= cap:
                 break
             _, label = _classify_311(row)
@@ -630,7 +646,7 @@ def build_swarm(
         if sum(type_counts.values()) >= 50:
             break
 
-    for row in _select_spatially_diverse(permits, center, 20):
+    for row in _select_spatially_diverse(permits, center, 20, radius_miles=radius):
         if row.get("lat") and row.get("lng"):
             swarm.append(SwarmPin(
                 lat=row["lat"], lng=row["lng"],
