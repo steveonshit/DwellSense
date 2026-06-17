@@ -1,11 +1,11 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
 import dynamic from "next/dynamic";
 import { ScanResult } from "@/lib/types";
+import { buildProximityCards } from "@/lib/proximityCards";
 import DangerBanner from "./DangerBanner";
 import LogisticsCarousel from "./LogisticsCarousel";
-import TopDiningCarousel from "./TopDiningCarousel";
 import ThreatCarousel from "./ThreatCarousel";
 import SideAds from "./SideAds";
 
@@ -20,6 +20,11 @@ interface Props {
 export default function ResultsDashboard({ result, onReset }: Props) {
   const [activeRoute, setActiveRoute] = useState<string | null>(null);
   const [pdfLoading, setPdfLoading] = useState(false);
+
+  const proximityCards = useMemo(
+    () => buildProximityCards(result.logistics, result.dining),
+    [result.logistics, result.dining],
+  );
 
   const handleHoverCard = useCallback((type: string | null) => {
     setActiveRoute(type);
@@ -56,15 +61,13 @@ export default function ResultsDashboard({ result, onReset }: Props) {
         <DangerBanner result={result} />
 
         <LogisticsCarousel
-          cards={result.logistics}
+          cards={proximityCards}
           onHoverCard={handleHoverCard}
         />
 
-        <TopDiningCarousel cards={result.dining || []} />
-
         <MapComponent
           mapData={result.map_data}
-          logistics={result.logistics}
+          logistics={proximityCards}
           activeRoute={activeRoute}
           flightExposure={result.flight_exposure}
         />

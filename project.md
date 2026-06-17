@@ -42,7 +42,7 @@ DwellSense/
 | Backend | Python 3.12, FastAPI, Uvicorn, APScheduler |
 | Database | Supabase (Postgres) |
 | AI | Google Gemini (`gemini-2.5-flash` by default) for **bullets only**; card chrome + score in Python |
-| Maps / geo | Mapbox (geocoding + map), Google Places API (New), Distance Matrix (if used) |
+| Maps / geo | Mapbox (geocoding + map), Google Places API (New), **Yelp Fusion API** (optional dining), Distance Matrix (if used) |
 | Hosting | **Vercel** (frontend), **Railway** (backend) |
 
 ### Tech stack in plain English
@@ -64,7 +64,7 @@ DwellSense/
 
 Use this when explaining the system in a 3–5 minute presentation:
 
-> DwellSense is a full-stack web app. The user-facing site is built with Next.js, React, Tailwind, and Mapbox GL, and it is hosted on Vercel. When someone enters an address, the browser calls a Next.js API route, which securely forwards the request to our Python FastAPI backend running on Railway. The backend does the real analysis: it geocodes the address with Mapbox, pulls nearby NYC data from Supabase, calls Google Places for nearby transit and grocery access, computes the Wellness Score in Python, and uses Gemini only to write short readable bullet summaries. Then the backend returns structured JSON, and the frontend turns that response into the score, cards, carousels, map pins, and flight-path visuals.
+> DwellSense is a full-stack web app. The user-facing site is built with Next.js, React, Tailwind, and Mapbox GL, and it is hosted on Vercel. When someone enters an address, the browser calls a Next.js API route, which securely forwards the request to our Python FastAPI backend running on Railway. The backend does the real analysis: it geocodes the address with Mapbox, pulls nearby NYC data from Supabase, calls Google Places for nearby transit and grocery access, ranks the top restaurants and bars within 2 miles (Yelp when configured, else Google Places), computes the Wellness Score in Python, and uses Gemini only to write short readable bullet summaries. Then the backend returns structured JSON, and the frontend turns that response into the score, cards, carousels, map pins, and flight-path visuals.
 
 ### Short memorization version
 
@@ -72,7 +72,7 @@ Use this when explaining the system in a 3–5 minute presentation:
 - **Backend:** Python FastAPI on Railway.
 - **Data:** Supabase for NYC records and ADS-B samples.
 - **Map/geocoding:** Mapbox.
-- **Nearby places:** Google Places.
+- **Nearby places:** Google Places (+ optional Yelp for dining rankings).
 - **AI:** Gemini for text bullets only.
 - **Scoring:** deterministic Python, not AI guessing.
 
@@ -181,7 +181,7 @@ Use this when explaining the system in a 3–5 minute presentation:
 
 16. **Backend returns one structured JSON response**
     - Model: `ScanResponse` in `backend/models/schemas.py`
-    - Includes `formatted_address`, `coordinates`, Wellness Score, risk labels, logistics, threat cards, map data, flight exposure, and Gemini debug fields.
+    - Includes `formatted_address`, `coordinates`, Wellness Score, risk labels, logistics, **`dining`** (top 4 restaurants/bars), threat cards, map data, flight exposure, and Gemini debug fields.
 
 17. **Frontend waits for scan + loading ad**
     - Files: `frontend/app/page.tsx`, `frontend/components/LoadingAd.tsx`
@@ -189,7 +189,7 @@ Use this when explaining the system in a 3–5 minute presentation:
 
 18. **Frontend renders the result**
     - File: `frontend/components/ResultsDashboard.tsx`
-    - Components: `DangerBanner`, `LogisticsCarousel`, `MapComponent`, `ThreatCarousel`, `SideAds`.
+    - Components: `DangerBanner`, `LogisticsCarousel`, **`TopDiningCarousel`**, `MapComponent`, `ThreatCarousel`, `SideAds`.
     - The frontend does not recompute the score. It displays the backend response.
 
 19. **Mapbox renders the interactive map**
@@ -204,6 +204,7 @@ Use this when explaining the system in a 3–5 minute presentation:
 
 **Scan response extras:**
 
+- `dining` — top **4** ranked restaurants/bars within **2 miles** (`RestaurantBarCard[]`; empty when APIs unavailable)
 - `map_data.flight_paths` / `map_data.flight_path` — flight overlays (see **Flights** section: `auto` vs `static` vs `live_adsb`)
 - `flight_exposure` — prototype “exposure summary” (may be `unavailable` if Supabase ingestion isn’t running)
 
@@ -307,6 +308,92 @@ This is a labeling improvement only. It does not invent hazards: labels are deri
 
 ---
 
+## Dining / Restaurants & Bars (Current Behavior)
+
+DwellSense shows the **top 4 ranked restaurants and bars within 2 miles** of the scanned address. Rankings come from real third-party APIs — **no invented scores or fake listings**.
+
+### Why Yelp + Google Places
+
+| Source | When used | Why |
+|--------|-----------|-----|
+| **Yelp Fusion API** | Preferred when `YELP_API_KEY` is set | Best public signal for dining: star rating, review volume, categories, price tier, Yelp page URL |
+| **Google Places API (New)** | Fallback when Yelp is unset, placeholder, or returns nothing | Reuses existing `GOOGLE_MAPS_API_KEY`; `restaurant` + `bar` nearby search with `POPULARITY` ranking |
+
+### API integration
+
+**Yelp** (`backend/services/places.py`):
+
+- Endpoint: `GET https://api.yelp.com/v3/businesses/search`
+- Auth: `Authorization: Bearer {YELP_API_KEY}`
+- Params: `latitude`, `longitude`, `radius` (3219 m = 2 mi), `categories=restaurants,bars`, `limit=20`, `sort_by=rating`
+- Docs: [Yelp Fusion — Business Search](https://www.yelp.com/developers/documentation/v3/business_search)
+
+**Google Places (New)** fallback:
+
+- Endpoint: `POST https://places.googleapis.com/v1/places:searchNearby`
+- Types: `restaurant`, `bar`
+- Radius: **3219 m** (2 miles)
+- Field mask includes `rating`, `userRatingCount`, `primaryTypeDisplayName`, `googleMapsUri`, `priceLevel`, `businessStatus`
+- Skips non-`OPERATIONAL` businesses
+
+### Ranking (conservative, not “nearest”)
+
+After fetching up to 20 candidates, the backend:
+
+1. Filters to a true **2-mile** Haversine circle (API radius alone is not trusted blindly).
+2. Computes `ranking_score` in `_ranking_score()`:
+   - **Rating** is primary (`× 0.78`).
+   - **Review volume** adds confidence via `log10(reviews + 1)` capped at ~500 reviews (`× 1.15`).
+   - **Distance** is only a small tie-breaker (`− distance_miles × 0.08`) because the product promise is “best within 2 miles,” not “closest.”
+3. Sorts by `ranking_score`, then `rating`, then `review_count`; returns top **4**.
+
+### API shape (`dining[]`)
+
+Each `RestaurantBarCard` (`backend/models/schemas.py`):
+
+| Field | Meaning |
+|-------|---------|
+| `name` | Business name |
+| `category` | Yelp category title or Google `primaryTypeDisplayName` |
+| `rating` | Star rating (may be `null`) |
+| `review_count` | Review count (may be `null`) |
+| `price_level` | `$`–`$$$$` when available |
+| `distance_value` / `distance_unit` | Haversine distance from property (`feet` if &lt; 0.5 mi, else `miles`) |
+| `coordinates` | `{ lat, lng }` for the venue |
+| `source` | `"yelp"` or `"google_places"` |
+| `url` | Yelp business URL or Google Maps URI |
+| `ranking_score` | Internal sort key (exposed for debugging/transparency) |
+
+### UI
+
+- Component: `frontend/components/TopDiningCarousel.tsx`
+- Rendered in `ResultsDashboard.tsx` **below** `LogisticsCarousel`, **above** the map
+- Shows rank (#1–#4), name, category, rating, review count, distance, source label, and external link
+- Empty state: **“Restaurant/bar rankings unavailable from the configured place APIs.”** (no placeholder venues)
+
+### Local / production setup
+
+1. **Minimum (works today):** set a real `GOOGLE_MAPS_API_KEY` — dining uses Google Places fallback.
+2. **Recommended for dining quality:** create a Yelp app at [yelp.com/developers](https://www.yelp.com/developers), then set `YELP_API_KEY` in `backend/.env` (local) or Railway Variables (production).
+3. Dining runs in parallel with logistics inside `asyncio.gather` in `backend/routers/scan.py` — it does not block municipal or flight work.
+
+**Commit:** `83cd8c6` — *Add top 4 ranked restaurants/bars within 2 miles*
+
+**Production status (verified):** pushed to `main`; auto-deployed to Railway + Vercel. As of deploy, `POST https://dwellsense-production.up.railway.app/scan` and `POST https://dwellsense.vercel.app/api/scan` both return `dining` with **4** items (Google Places fallback when `YELP_API_KEY` is unset). UI: hard-refresh the live site and run a **new** scan — carousel appears **below logistics**, above the map.
+
+**Quick production check:**
+
+```bash
+curl -s -X POST 'https://dwellsense.vercel.app/api/scan' \
+  -H 'Content-Type: application/json' \
+  --data '{"address":"350 W 42nd St, New York, NY"}' \
+  | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('dining') or []), (d.get('dining') or [{}])[0].get('name'))"
+```
+
+Expected: `4` and a real venue name (not an error).
+
+---
+
 ## Environment Variables
 
 ### Backend (Railway / local)
@@ -380,6 +467,22 @@ This is a labeling improvement only. It does not invent hazards: labels are deri
 
 **Local dev gotcha:** for local testing, set `BACKEND_URL=http://127.0.0.1:8000`. If `BACKEND_URL` points at Railway, your local frontend will keep using production and you won’t see local backend changes.
 
+### Local vs production (workflow)
+
+Before implementing or verifying a feature, confirm **where** it should land:
+
+| Target | Frontend | Backend | When to use |
+|--------|----------|---------|-------------|
+| **Local** | `http://localhost:3000` | `http://127.0.0.1:8000` | Dev, debugging, unreleased code |
+| **Live site** | `https://dwellsense.vercel.app` | `https://dwellsense-production.up.railway.app` | What real users see |
+
+**Rules of thumb:**
+
+1. **Local code ≠ live site** until you `git push origin main` and Railway/Vercel finish deploying.
+2. Local frontend with `BACKEND_URL` pointing at Railway still hits **production backend** — UI can be local while data is production.
+3. After deploy, hard-refresh the live site and run a **new scan**; cached scan results and old JS bundles won’t show new fields like `dining`.
+4. Verify production with `POST /api/scan` on Vercel (proxy) or `POST /scan` on Railway — check that new JSON fields exist before assuming the UI is wrong.
+
 ---
 
 ## Deployment Summary
@@ -403,6 +506,7 @@ This is a labeling improvement only. It does not invent hazards: labels are deri
 - Project linked to **`frontend`** as root (or deploy from `frontend/` via CLI).
 - **`vercel.json`** sets **`maxDuration`: 300** seconds for `app/api/scan/route.ts` and `app/api/pdf/route.ts` so long scans (Gemini + Places) are not cut off by the default serverless limit.
 - **`frontend/app/api/scan/route.ts`** exports `maxDuration = 300` and uses `AbortSignal.timeout(290_000)` on the fetch to the backend.
+- **Vercel CLI:** `npx vercel ls` / `vercel deploy` require a valid token (`vercel login`). An expired local token does **not** mean production is down — use the live URL or Railway/Vercel dashboards to confirm deploy status.
 
 ---
 
@@ -444,6 +548,7 @@ This table stores raw ADS‑B position samples — individual aircraft observati
 | ADS‑B ingestion loop | `backend/jobs/adsb_ingest.py` |
 | Flight exposure scoring | `backend/services/flight_exposure.py` |
 | Swarm pin types | `backend/models/schemas.py` (`SwarmPin`) |
+| Dining card schema | `backend/models/schemas.py` (`RestaurantBarCard`) |
 | Next.js scan proxy | `frontend/app/api/scan/route.ts` |
 | Scan + loading ad flow | `frontend/app/page.tsx`, `frontend/components/LoadingAd.tsx` |
 | Results UI | `frontend/components/ResultsDashboard.tsx` |
@@ -515,6 +620,7 @@ Some queries are intentionally capped (e.g. dense Manhattan can hit limits). Whe
 **Implemented:**
 
 - **Smaller Gemini ask:** Scoring and threat-card chrome live in Python; Gemini returns only **`bullets`** JSON — reduces latency vs the old full-card JSON.
+- **Top dining within 2 miles:** Yelp-first (optional key) + Google Places fallback; `TopDiningCarousel` on results page.
 
 ---
 
@@ -522,6 +628,7 @@ Some queries are intentionally capped (e.g. dense Manhattan can hit limits). Whe
 
 - **Reliability first**: treat this as a production system; avoid shortcuts and misleading data.
 - **No fake outputs**: if a data source is unavailable, surface **unavailable** (with graceful degradation) rather than inventing approximations without clear labeling. **Exception:** map **display-only** flight line shaping is allowed when labeled as visual smoothing — API coordinates remain the backend truth unless you change server code.
+- **Local vs live site**: confirm whether work targets **localhost** or **production** before implementing or verifying; push to `main` and wait for Railway/Vercel deploy before expecting changes on the public URL.
 - **When giving operational instructions** (dashboards, env vars, deploy steps): provide them **clearly**, **grouped together**, and in **bullet-point format** with exact variable names/values.
 
 **Not yet implemented** (discussed direction):
@@ -677,7 +784,7 @@ cd backend
 python3 -m venv venv
 source venv/bin/activate   # Windows: venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env       # fill in keys
+cp .env.example .env       # fill in keys (optional YELP_API_KEY for better dining rankings)
 # Optional flight modes for local experiments:
 #   FLIGHT_MODE=auto        (default) — Supabase samples if present, else corridors
 #   FLIGHT_MODE=static      — dashed corridor demo look
@@ -737,7 +844,7 @@ python -m jobs.daily_refresh
 
 ## Production status & follow-ups
 
-**Shipped in codebase (verify on your Railway + Vercel dashboards):**
+**Shipped in codebase and on production (verify on your Railway + Vercel dashboards):**
 
 - NYC-only scans (`/scan` guardrail) + NYC-locked map viewport
 - **`FLIGHT_MODE=auto` (default):** Supabase **`adsb_samples`** polylines when ingest has filled the window; else **static** corridors — **no OpenSky** on the default scan path when samples exist
@@ -748,13 +855,14 @@ python -m jobs.daily_refresh
 - Backend **polyline cleanup** (discontinuity splitting, near-property pass selection, dedupe, spike filtering, implied-speed filter, Douglas–Peucker, light smooth) + frontend **display-only great-circle / Chaikin / centripetal Catmull–Rom shaping** (`frontend/lib/flightPathDisplay.ts`)
 - **Geocoding hardening:** `httpx`, **`trust_env=False`**, retries, longer timeouts (`MAPBOX_GEOCODE_*`)
 - **Flight Activity** UI (paths + exposure chips), **fail-open** `flight_exposure`, **Places-backed mall** card with static fallback
-- **Top dining within 2 miles:** `/scan` returns `dining[]` — top 4 ranked restaurants/bars (Yelp preferred, Google Places fallback); UI carousel shows rating, review count, distance, source, and link
+- **Top dining within 2 miles (live):** `/scan` returns `dining[]` — top 4 ranked restaurants/bars (Yelp preferred, Google Places fallback); `TopDiningCarousel` on results page below logistics. Deployed with **`83cd8c6`** on `dwellsense.vercel.app` + Railway backend.
 - **Nearby municipal radius:** true Haversine radius is now **~1 mile**, with widened bbox prefilter + higher fetch caps to reduce premature truncation in dense areas
 - **311 sewer / water labels:** map zone and swarm pin labels now use NYC 311 descriptors to classify the issue while keeping visible names short, e.g. **Sewer Odor**, **Sewer Backup**, **Drain Blockage**, **Water Quality Issue**, **Water Leak**, or **Water Pressure**
 
 **Ongoing / decisions:**
 
 - Keep **`MAPBOX_TOKEN`** and **`GOOGLE_MAPS_API_KEY`** valid on Railway; **`BACKEND_URL`** + **`NEXT_PUBLIC_MAPBOX_TOKEN`** on Vercel
+- **Optional:** set **`YELP_API_KEY`** on Railway for Yelp-sourced dining rankings (otherwise Google Places fallback)
 - **Ingestion:** `ADSB_INGEST_ENABLED` vs external cron running `python -m jobs.adsb_ingest`
 - **Flight-path warehouse:** promote `adsb_samples` from operational raw samples into a long-term warehouse: retention policy, source metadata, quality scoring, route/corridor aggregates, stable display tables, and observability
 - **Exposure honesty:** replace UTC night/day heuristic with **America/New_York** windows when you tighten the product story
@@ -769,7 +877,7 @@ python -m jobs.daily_refresh
 - **Flights (`flights.py`):** **`FLIGHT_MODE`** model is **`auto` | `static` | `live_adsb`** with **`adsb` → `auto`** alias; **`auto`** reads **`adsb_samples`** first; stored-path cleanup includes discontinuity splitting (`ADSB_PATH_MAX_GAP_MINUTES`, `ADSB_PATH_BLIND_JUMP_MILES`), near-pass slicing (`ADSB_PATH_KEEP_*`), dedupe, spike removal (`ADSB_PATH_SPIKE_*`), implied-speed filtering, Douglas–Peucker, smoothing, and final vertex capping; OpenSky **`live_adsb`** remains budgeted/sequential.
 - **Map flight lines (`MapComponent.tsx` + `flightPathDisplay.ts`):** client-side display shaping now includes great-circle leg densification (`NEXT_PUBLIC_FLIGHT_PATH_GREAT_CIRCLE`, `NEXT_PUBLIC_FLIGHT_PATH_GC_*`), Chaikin corner rounding, and centripetal Catmull–Rom (`NEXT_PUBLIC_FLIGHT_PATH_SPLINE_*`); plane animation follows the **same** coordinates as the visible line; caption notes display smoothing; dash/solid rules unchanged in spirit.
 - **Places (`places.py`):** nearest **mall** from **Places `shopping_mall`** / text fallback; hardcoded NYC malls only if Places is empty.
-- **Dining (`places.py` + `TopDiningCarousel.tsx`):** top 4 restaurants/bars within **2 miles**; Yelp Fusion when `YELP_API_KEY` is set, else Google Places `restaurant` + `bar` nearby search; ranking uses real `rating` + `review_count` with a small distance tie-breaker; empty array when APIs unavailable (no fake data).
+- **Dining (`places.py` + `TopDiningCarousel.tsx`):** top 4 restaurants/bars within **2 miles**; Yelp Fusion when `YELP_API_KEY` is set, else Google Places `restaurant` + `bar` nearby search; ranking uses real `rating` + `review_count` with a small distance tie-breaker; empty array when APIs unavailable (no fake data). **Shipped to production** (`83cd8c6`).
 - **City data (`city_data.py`):** nearby municipal rows use a true **~1 mile** Haversine filter after bbox prefilter; fetch caps were raised for the larger area; sewer / water 311 labels now use `descriptor` details for classification while keeping visible names to 2-3 words, including **Water Quality Issue** instead of ambiguous **Water Quality**.
 - **Flights (`flights.py`):** production path selection now uses completed stability buckets (`ADSB_PATH_STABILITY_BUCKET_MINUTES`, `ADSB_PATH_STABILITY_LAG_MINUTES`) and preserves at least the configured number of real ADS-B vertices, preventing paths from changing every search or collapsing to misleading 2-point lines.
 - **Ingest (`adsb_ingest.py`):** ingest stores real observed position snapshots from ordered providers (`ADSB_INGEST_SOURCES`); production currently uses **adsb.lol first, OpenSky fallback**, every **10 seconds**.
@@ -777,4 +885,4 @@ python -m jobs.daily_refresh
 
 ---
 
-*Last updated: documented the production ADS-B ingest cadence, stable completed-bucket flight-path selection, minimum real vertex preservation, and the direction to evolve `adsb_samples` into a long-term NYC flight-path warehouse.*
+*Last updated: **Dining / Restaurants & Bars** section (APIs, ranking, schema, UI); **local vs production workflow**; production deploy verification for `83cd8c6` on Vercel + Railway; Vercel CLI token note.*

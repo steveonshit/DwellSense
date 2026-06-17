@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { LogisticsCard } from "@/lib/types";
+import { isDiningCard } from "@/lib/proximityCards";
 
 interface Props {
   cards: LogisticsCard[];
@@ -49,7 +50,7 @@ export default function LogisticsCarousel({ cards, onHoverCard }: Props) {
     <div className="fade-in w-full" style={{ animationDelay: "0.1s" }}>
       <div className="flex justify-between items-center mb-1 px-2">
         <h3 className="text-white font-black uppercase tracking-widest text-sm md:text-base flex items-center gap-2">
-          📍 Transit &amp; Grocery Proximity
+          📍 Transit, Grocery &amp; Dining Proximity
         </h3>
         <div className="flex items-center gap-2 text-rose-400 bg-rose-500/10 px-3 py-1.5 rounded-full border border-rose-500/20">
           <span className="animate-pulse">←</span>
@@ -97,12 +98,28 @@ export default function LogisticsCarousel({ cards, onHoverCard }: Props) {
             </div>
 
             <div className="text-right flex flex-col justify-center items-end pl-2 ml-1 border-l border-slate-700/50 shrink-0 h-full">
-              <div className="text-white text-base lg:text-lg font-black leading-none tracking-tight mb-1">
-                {card.distance_value}
-              </div>
-              <div className="text-slate-400 text-[8px] md:text-[9px] font-bold uppercase tracking-widest leading-none capitalize">
-                {card.distance_unit}
-              </div>
+              {isDiningCard(card.type) && card.rating != null ? (
+                <>
+                  <div className="text-white text-base lg:text-lg font-black leading-none tracking-tight mb-1">
+                    {card.rating.toFixed(1)}
+                  </div>
+                  <div className="text-amber-300 text-[8px] md:text-[9px] font-bold uppercase tracking-widest leading-none mb-1">
+                    {card.review_count != null ? `${card.review_count} reviews` : "Rated"}
+                  </div>
+                  <div className="text-slate-400 text-[8px] md:text-[9px] font-bold uppercase tracking-widest leading-none capitalize">
+                    {card.distance_value} {card.distance_unit}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="text-white text-base lg:text-lg font-black leading-none tracking-tight mb-1">
+                    {card.distance_value}
+                  </div>
+                  <div className="text-slate-400 text-[8px] md:text-[9px] font-bold uppercase tracking-widest leading-none capitalize">
+                    {card.distance_unit}
+                  </div>
+                </>
+              )}
             </div>
           </div>
         ))}

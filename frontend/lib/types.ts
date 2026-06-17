@@ -12,6 +12,10 @@ export interface LogisticsCard {
   distance_unit: "feet" | "miles";
   color: string;
   coordinates: Coordinate;
+  /** Present on dining cards merged into the proximity bar */
+  rating?: number | null;
+  review_count?: number | null;
+  url?: string | null;
 }
 
 export interface RestaurantBarCard {

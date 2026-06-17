@@ -164,7 +164,7 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
       { padding: 80, duration: 800 }
     );
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeRoute]);
+  }, [activeRoute, logistics, mapData.target.lat, mapData.target.lng]);
 
   // ── Update flight corridors when new scan data arrives ──────────────────────
   useEffect(() => {
@@ -339,6 +339,7 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
     };
 
     logistics.forEach((card) => {
+      const pinEmoji = card.type.startsWith("dining-") ? (card.emoji || "🍽️") : (PIN_EMOJI[card.type] || "📍");
       const outer = document.createElement("div");
       outer.style.cssText = `
         width: 36px; height: 36px; cursor: pointer; pointer-events: auto;
@@ -354,8 +355,14 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
         transition: transform 0.2s, box-shadow 0.2s;
         transform-origin: center center;
       `;
-      inner.textContent = PIN_EMOJI[card.type] || "📍";
+      inner.textContent = pinEmoji;
       outer.appendChild(inner);
+
+      const ratingLine =
+        card.type.startsWith("dining-") && card.rating != null
+          ? `<div style="font-size:10px;color:#fbbf24;margin-top:2px">★ ${card.rating.toFixed(1)}` +
+            `${card.review_count != null ? ` · ${card.review_count} reviews` : ""}</div>`
+          : "";
 
       const popup = new mapboxgl.Popup({
         offset: 20,
@@ -364,7 +371,8 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
         anchor: "bottom",
       }).setHTML(
         `<div style="font-weight:700;color:${card.color};font-size:12px">${card.emoji} ${card.name}</div>` +
-        `<div style="font-size:10px;color:#94a3b8;margin-top:2px">${card.category} · ${card.distance_value} ${card.distance_unit} away</div>`
+        `<div style="font-size:10px;color:#94a3b8;margin-top:2px">${card.category} · ${card.distance_value} ${card.distance_unit} away</div>` +
+        ratingLine
       );
 
       outer.addEventListener("mouseenter", () => {
