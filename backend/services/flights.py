@@ -311,6 +311,27 @@ def _decimate_indices(n: int, max_points: int) -> list[int]:
     return uniq
 
 
+def _decimate_coords_at_least(
+    coords: list[Coordinate],
+    times: list[datetime | None],
+    alts: list[float | None],
+    *,
+    target: int,
+    min_points: int,
+) -> tuple[list[Coordinate], list[datetime | None], list[float | None]]:
+    """Even decimation that never returns fewer than min_points when input allows."""
+    n = len(coords)
+    if n <= target:
+        return coords, times, alts
+    keep = max(min_points, min(target, n))
+    idxs = _decimate_indices(n, keep)
+    return (
+        [coords[i] for i in idxs],
+        [times[i] if i < len(times) else None for i in idxs],
+        [alts[i] if i < len(alts) else None for i in idxs],
+    )
+
+
 def _dedupe_track_points(
     coords: list[Coordinate],
     times: list[datetime | None],
@@ -763,9 +784,10 @@ def get_stored_sample_flight_paths(
 
             if len(coords) >= 3 and dp_epsilon_mi > 0:
                 keep_idx = _douglas_peucker_indices(coords, dp_epsilon_mi)
-                coords = [coords[i] for i in keep_idx]
-                alts_track = [alts_track[i] for i in keep_idx]
-                times = [times[i] for i in keep_idx]
+                if len(keep_idx) >= min_points or len(coords) < min_points:
+                    coords = [coords[i] for i in keep_idx]
+                    alts_track = [alts_track[i] for i in keep_idx]
+                    times = [times[i] for i in keep_idx]
 
             ec = float(dp_epsilon_mi)
             widen_guard = 0
@@ -775,25 +797,21 @@ def get_stored_sample_flight_paths(
                 keep_idx = _douglas_peucker_indices(coords, ec)
                 if len(keep_idx) >= len(coords):
                     break
+                if len(keep_idx) < min_points:
+                    break
                 coords = [coords[i] for i in keep_idx]
                 alts_track = [alts_track[i] for i in keep_idx]
                 times = [times[i] for i in keep_idx]
 
             if len(coords) > max_points:
-                idxs = _decimate_indices(len(coords), max_points)
-                coords = [coords[i] for i in idxs]
-                times = [times[i] for i in idxs]
-                alts_track = [alts_track[i] for i in idxs]
+                coords, times, alts_track = _decimate_coords_at_least(
+                    coords, times, alts_track, target=max_points, min_points=min_points
+                )
 
             if len(coords) < min_points and len(coords_full) >= min_points:
-                coords = list(coords_full)
-                times = list(times_full)
-                alts_track = list(alts_m)
-                if len(coords) > max_points:
-                    idxs = _decimate_indices(len(coords), max_points)
-                    coords = [coords[i] for i in idxs]
-                    times = [times[i] for i in idxs]
-                    alts_track = [alts_track[i] for i in idxs]
+                coords, times, alts_track = _decimate_coords_at_least(
+                    coords_full, times_full, alts_m, target=max_points, min_points=min_points
+                )
 
             coords = _smooth_coords_3tap(coords, smooth_passes)
 
@@ -825,7 +843,7 @@ def get_stored_sample_flight_paths(
     candidates.sort(key=lambda x: (round(x[0], 3), -x[4], x[1]))
     out: list[FlightPath] = []
     for min_d, icao, coords, alts_track, raw_count in candidates:
-        if len(coords) < 2:
+        if len(coords) < min_points:
             continue
         cleaned_alts = [float(a) for a in alts_track if isinstance(a, (int, float)) and float(a) > 1.0]
         median_alt_ft = None

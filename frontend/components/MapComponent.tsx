@@ -13,6 +13,9 @@ const NYC_MAX_BOUNDS: mapboxgl.LngLatBoundsLike = [
   [-73.7004, 40.9176], // NE
 ];
 
+/** Minimum real ADS-B vertices required to render a track (matches backend ADSB_PATH_MIN_POINTS). */
+const MIN_FLIGHT_PATH_POINTS = 5;
+
 const SWARM_EMOJI: Record<string, string> = {
   police:       "🚓",
   rat:          "🐀",
@@ -58,6 +61,7 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
   const trackLastTimeRef = useRef(0);
   const trackRafRef = useRef<number>();
   const markersRef = useRef<mapboxgl.Marker[]>([]);
+  const flightVertexMarkersRef = useRef<mapboxgl.Marker[]>([]);
 
   // ── Build map on mount ──────────────────────────────────────────────────────
   useEffect(() => {
@@ -108,6 +112,8 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
       if (trackRafRef.current) cancelAnimationFrame(trackRafRef.current);
       trackPlaneMarkersRef.current.forEach((m) => m.remove());
       trackPlaneMarkersRef.current = [];
+      flightVertexMarkersRef.current.forEach((m) => m.remove());
+      flightVertexMarkersRef.current = [];
       markersRef.current.forEach((m) => m.remove());
       map.remove();
       mapRef.current = null;
@@ -177,11 +183,14 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
       if (!map.isStyleLoaded()) return;
 
       upsertFlightPaths(map, paths);
+      upsertFlightPathVertices(map, paths);
 
       // Always restart per-path animations on new scan data
       if (!paths.length) {
         trackPlaneMarkersRef.current.forEach((m) => m.remove());
         trackPlaneMarkersRef.current = [];
+        flightVertexMarkersRef.current.forEach((m) => m.remove());
+        flightVertexMarkersRef.current = [];
         if (trackRafRef.current) cancelAnimationFrame(trackRafRef.current);
         trackRafRef.current = undefined;
       } else {
@@ -407,6 +416,34 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
     markersRef.current.push(marker);
   };
 
+  const upsertFlightPathVertices = (map: mapboxgl.Map, paths: ReturnType<typeof getFlightPaths>) => {
+    flightVertexMarkersRef.current.forEach((m) => m.remove());
+    flightVertexMarkersRef.current = [];
+
+    paths.forEach((p) => {
+      const verts = p.path?.filter(Boolean) ?? [];
+      if (verts.length < MIN_FLIGHT_PATH_POINTS) return;
+
+      verts.forEach((c) => {
+        const outer = document.createElement("div");
+        outer.style.cssText =
+          "width: 10px; height: 10px; display: flex; align-items: center; justify-content: center; pointer-events: none;";
+        const inner = document.createElement("div");
+        inner.style.cssText = `
+          width: 6px; height: 6px; border-radius: 50%;
+          background: #22d3ee; border: 1px solid rgba(255,255,255,0.9);
+          box-shadow: 0 0 6px rgba(34,211,238,0.85);
+        `;
+        outer.appendChild(inner);
+
+        const marker = new mapboxgl.Marker({ element: outer, anchor: "center" })
+          .setLngLat([c.lng, c.lat])
+          .addTo(map);
+        flightVertexMarkersRef.current.push(marker);
+      });
+    });
+  };
+
   const upsertFlightPaths = (map: mapboxgl.Map, paths: ReturnType<typeof getFlightPaths>) => {
     const toLineCoords = (p: (typeof paths)[number]) => flightPathToLineLngLat(p);
 
@@ -425,7 +462,7 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
     const existing = map.getSource("flight-paths") as mapboxgl.GeoJSONSource | undefined;
     if (existing) {
       existing.setData(data);
-      const hasRealTracks = paths.some((p) => (p.path?.length ?? 0) >= 2);
+      const hasRealTracks = paths.some((p) => (p.path?.length ?? 0) >= MIN_FLIGHT_PATH_POINTS);
       const dash = hasRealTracks ? null : ([2, 3] as [number, number]);
       map.setPaintProperty("flight-paths-line", "line-dasharray", dash as unknown as number[]);
       if (map.getLayer("flight-paths-glow")) {
@@ -435,7 +472,7 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
     }
 
     map.addSource("flight-paths", { type: "geojson", data });
-    const hasRealTracks = paths.some((p) => (p.path?.length ?? 0) >= 2);
+    const hasRealTracks = paths.some((p) => (p.path?.length ?? 0) >= MIN_FLIGHT_PATH_POINTS);
     const dashPaint = hasRealTracks ? {} : { "line-dasharray": [2, 3] as [number, number] };
     const lineLayout = { "line-cap": "round" as const, "line-join": "round" as const };
 
@@ -624,6 +661,11 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
                 >
                   <div className="text-slate-200 font-black text-[11px] truncate">{p.label}</div>
                   <div className="mt-1 flex flex-wrap gap-2 text-slate-400">
+                    {(p.path?.length ?? p.sample_count ?? 0) > 0 && (
+                      <span className="text-cyan-300 font-black">
+                        {p.sample_count ?? p.path?.length ?? 0} pts
+                      </span>
+                    )}
                     {p.median_altitude_ft != null && <span>~{p.median_altitude_ft.toLocaleString()} ft</span>}
                     {p.closest_miles != null && <span>closest {p.closest_miles} mi</span>}
                     {p.last_seen_utc && <span>{formatSeenAgo(p.last_seen_utc) ?? ""}</span>}
@@ -654,9 +696,9 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
         )}
       </div>
 
-      {getFlightPaths().some((p) => (p.path?.length ?? 0) >= 2) && (
+      {getFlightPaths().some((p) => (p.path?.length ?? 0) >= MIN_FLIGHT_PATH_POINTS) && (
         <div className="mt-2 px-2 text-[10px] md:text-[11px] font-bold text-slate-500">
-          Live flight tracks (recent); lines use great-circle arcs + display smoothing (not raw chords).
+          Live flight tracks use real ADS-B observations (min {MIN_FLIGHT_PATH_POINTS} points per path); cyan dots mark each observed position.
         </div>
       )}
     </div>
