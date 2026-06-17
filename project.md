@@ -421,7 +421,7 @@ Expected: `4` and a real venue name (not an error).
 | `ADSB_PATH_STABILITY_BUCKET_MINUTES` | Optional. **5–1440**, default **60**. Freezes stored path selection to completed time buckets so repeated scans of the same address do not rotate live aircraft every few seconds. |
 | `ADSB_PATH_STABILITY_LAG_MINUTES` | Optional. **0–1440**, default **0** in code; production currently uses **15**. Adds lag before the completed bucket cutoff so scans use fully-ingested data. |
 | `ADSB_PATH_BBOX_MILES` | Optional. **5–40**, default **22**. Bounding box half-extent around the property for the Supabase filter. |
-| `ADSB_PATH_MIN_POINTS` | Optional. **2–20**, default **2**. Minimum raw samples per ICAO to include a track. Production currently uses **4** so visible paths keep multiple real observations. |
+| `ADSB_PATH_MIN_POINTS` | Optional. **5–20**, default **5**. Minimum raw samples per ICAO to include a track; output paths also preserve at least this many real vertices after cleanup. |
 | `ADSB_PATH_MAX_POINTS` | Optional. **8–80**, default **40**. Even decimation cap per aircraft before cleanup. |
 | `ADSB_PATH_ROW_LIMIT` | Optional. **2000–25000**, default **15000**. Max rows returned from `adsb_samples` for one scan’s query. |
 | `ADSB_PATH_MAX_GAP_MINUTES` | Optional. **20–720**, default **120**. Splits a stored ADS-B series when consecutive samples are too far apart in time, preventing separate flights with the same ICAO from being stitched into one line. |
@@ -706,7 +706,7 @@ Nearest-corridor ranking uses **minimum great-circle distance** from the propert
 4. **Eligibility:** respect **`ADSB_PATH_MIN_POINTS`**. Do **not** fabricate a second point for a one-sample aircraft; if there are not enough real samples, the track is not shown.
 5. **Near-property pass selection:** keep one contiguous slice around the closest approach to the scanned address (`ADSB_PATH_KEEP_NEAR_MILES` + `ADSB_PATH_KEEP_PAD_POINTS`) instead of drawing a long unrelated aircraft path.
 6. **Full-resolution cleanup before capping:** dedupe close vertices, drop small sharp local reversals (`ADSB_PATH_SPIKE_*`), filter impossible-speed hops, simplify with Douglas–Peucker, then smooth.
-7. **Preserve minimum real vertices:** if cleanup simplifies a valid track below `ADSB_PATH_MIN_POINTS`, restore real source vertices (capped if needed) instead of returning a 2-point line.
+7. **Preserve minimum real vertices:** if cleanup simplifies a valid track below `ADSB_PATH_MIN_POINTS`, restore real source vertices (capped if needed) instead of returning a misleading short line (minimum **5** by default).
 8. **Vertex cap last:** if a track is still too dense after simplification, widen DP tolerance up to a limit and only then fall back to even decimation. This avoids aliasing sparse ADS-B into zig-zag chords.
 9. **Ranking:** prefer the segment whose closest approach to the property is inside the distance gate; for each ICAO, keep the best nearby segment. Ties are stable (`closest distance`, raw point count, then ICAO) so repeated scans in the same bucket do not rotate paths randomly.
 

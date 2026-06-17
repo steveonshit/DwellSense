@@ -572,9 +572,9 @@ def get_stored_sample_flight_paths(
     except ValueError:
         bbox_radius = 22.0
     try:
-        min_points = max(2, min(20, int(os.getenv("ADSB_PATH_MIN_POINTS", "2"))))
+        min_points = max(5, min(20, int(os.getenv("ADSB_PATH_MIN_POINTS", "5"))))
     except ValueError:
-        min_points = 2
+        min_points = 5
     try:
         max_points = max(8, min(80, int(os.getenv("ADSB_PATH_MAX_POINTS", "40"))))
     except ValueError:
@@ -1142,9 +1142,9 @@ async def get_adsb_tracks_near_property(
         except ValueError:
             max_leg_miles = 8.0
         try:
-            min_track_points = max(2, min(30, int(os.getenv("OPENSKY_TRACK_MIN_POINTS", "2"))))
+            min_track_points = max(5, min(30, int(os.getenv("OPENSKY_TRACK_MIN_POINTS", "5"))))
         except ValueError:
-            min_track_points = 2
+            min_track_points = 5
 
         continuous_segments: list[list[tuple[Coordinate, int | None, float | None]]] = []
         cur_segment = [samples[0]]
