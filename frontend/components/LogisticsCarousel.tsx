@@ -85,7 +85,10 @@ export default function LogisticsCarousel({ cards, onHoverCard }: Props) {
                 <div className="text-slate-400 text-[8px] md:text-[9px] font-black uppercase tracking-widest leading-none mb-1">
                   {card.category}
                 </div>
-                <div className="text-white font-black text-[13px] xl:text-[14px] leading-tight mb-1 whitespace-normal">
+                <div
+                  className="text-white font-black text-[13px] xl:text-[14px] leading-snug mb-1 line-clamp-2"
+                  title={card.name}
+                >
                   {card.name}
                 </div>
                 <div

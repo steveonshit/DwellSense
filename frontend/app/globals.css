@@ -68,7 +68,7 @@ body {
 
 @media (min-width: 768px) {
   .stat-card { min-width: 380px; }
-  .logistics-card { min-width: 280px; }
+  .logistics-card { min-width: 300px; }
 }
 
 /* ── Hover Cards ────────────────────────────────────────────────────────────── */

@@ -156,19 +156,22 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
     });
 
     return () => {
+      const swarmMarkers = markersRef.current;
+      const planeMarkers = trackPlaneMarkersRef.current;
+      const vertexMarkers = flightVertexMarkersRef.current;
       if (trackRafRef.current) cancelAnimationFrame(trackRafRef.current);
       zonePopupRef.current?.remove();
       zonePopupRef.current = null;
       zoneHoveredIdRef.current = null;
-      trackPlaneMarkersRef.current.forEach((m) => m.remove());
+      planeMarkers.forEach((m) => m.remove());
       trackPlaneMarkersRef.current = [];
-      flightVertexMarkersRef.current.forEach((m) => m.remove());
+      vertexMarkers.forEach((m) => m.remove());
       flightVertexMarkersRef.current = [];
-      markersRef.current.forEach((m) => m.remove());
+      swarmMarkers.forEach((m) => m.remove());
+      markersRef.current = [];
       map.remove();
       mapRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ── Update route when activeRoute changes ───────────────────────────────────

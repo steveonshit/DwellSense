@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef } from "react";
+import Link from "next/link";
 import Navbar from "@/components/Navbar";
 import HeroSection from "@/components/HeroSection";
 import LoadingAd from "@/components/LoadingAd";
@@ -103,19 +104,26 @@ export default function Home() {
           <div className="flex flex-wrap gap-8 text-[11px] font-medium text-slate-400">
             <div className="flex flex-col gap-1">
               <span className="text-white font-bold uppercase text-[9px] tracking-widest mb-0.5">Product</span>
-              <a href="#" className="hover:text-rose-400 transition-colors">Scanner</a>
+              <Link href="/" className="hover:text-rose-400 transition-colors">Scanner</Link>
             </div>
             <div className="flex flex-col gap-1">
               <span className="text-white font-bold uppercase text-[9px] tracking-widest mb-0.5">Data</span>
-              <a href="#" className="hover:text-rose-400 transition-colors">NYC Open Data</a>
+              <a
+                href="https://opendata.cityofnewyork.us/"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="hover:text-rose-400 transition-colors"
+              >
+                NYC Open Data
+              </a>
             </div>
             <div className="flex flex-col gap-1">
               <span className="text-white font-bold uppercase text-[9px] tracking-widest mb-0.5">Legal</span>
-              <a href="#" className="hover:text-white transition-colors">Privacy</a>
+              <span className="text-slate-500">Privacy (soon)</span>
             </div>
           </div>
           <div className="flex flex-col items-start md:items-end gap-2 text-[10px] text-slate-600">
-            <p>&copy; 2026 DwellSense. Not affiliated with Zillow.</p>
+            <p>&copy; {new Date().getFullYear()} DwellSense. Not affiliated with Zillow.</p>
           </div>
         </div>
       </footer>

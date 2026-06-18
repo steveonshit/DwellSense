@@ -204,8 +204,9 @@ def compute_risk_from_counts(
     safety_score = int(round(max(0.0, min(100.0, 100 - raw_hazard))))
 
     # Dense 311 neighborhoods should not read as "strong signals" when crime is quiet.
-    if reports_count >= _HIGH_311_REPORTS_THRESHOLD:
-        penalty = min(30, int(6 * math.log1p(reports_count / 40)))
+    if reports_count >= _HIGH_311_REPORTS_THRESHOLD and crime_count < 8:
+        excess = max(0, reports_count - _HIGH_311_REPORTS_THRESHOLD)
+        penalty = min(18, int(4 * math.log1p(excess / 50)))
         safety_score = max(0, safety_score - penalty)
 
     # If any dataset hits our fetch cap, the true neighborhood density may be higher than

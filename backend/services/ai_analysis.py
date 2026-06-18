@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 # Bump this when bullet formatting / merge rules change so in-memory caches don't
 # serve stale card text across deploys.
-_ANALYSIS_CACHE_VERSION = "2026-06-18-ux-bottom-lines-chrome-score"
+_ANALYSIS_CACHE_VERSION = "2026-06-18-polish-score-copy"
 
 # Allow override via env (Railway / local).
 # Default raised so Gemini can finish during end-to-end debugging.
@@ -526,7 +526,7 @@ def _enforce_fact_locked_bullets(
     if crime_count <= 0:
         out["police_calls"] = [
             f"No NYPD complaints in the last 30 days within ~{r:g} miles.",
-            "Police-call volume looks low on NYC Open Data for this radius.",
+            "Dispatch call volume looks low on NYPD Open Data for this radius.",
             _bottom("police_calls"),
         ]
     else:
@@ -540,7 +540,7 @@ def _enforce_fact_locked_bullets(
     if crime_count <= 0:
         out["area_safety"] = [
             f"No NYPD crime reports within ~{r:g} miles in the last 30 days.",
-            "Area looks quieter on official crime data for this scan.",
+            "Violent and property crime signals look quiet on official data here.",
             _bottom("area_safety"),
         ]
     else:
