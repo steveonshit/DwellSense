@@ -8,6 +8,7 @@ the functions fall back to fetching live from NYC Open Data (Socrata).
 
 import os
 import asyncio
+import hashlib
 import logging
 import requests
 from datetime import datetime, timedelta, timezone
@@ -683,50 +684,30 @@ def get_map_swarm_max_pins() -> int:
         return 100
 
 
+def _swarm_pin_shuffle_key(pin: SwarmPin, center: Coordinate) -> str:
+    """Stable per-property ordering (rescans show the same subset)."""
+    payload = (
+        f"{center.lat:.5f}|{center.lng:.5f}|"
+        f"{pin.lat:.5f}|{pin.lng:.5f}|{pin.type}|{pin.label[:48]}"
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
 def _sample_swarm_pins(
     pins: list[SwarmPin],
     center: Coordinate,
     limit: int,
 ) -> list[SwarmPin]:
-    """Pick a spatially spread subset of real pins (one per grid cell first)."""
+    """
+    Pick a subset of real pins for map readability.
+
+    Uses a deterministic shuffle (not a spatial grid) so displayed pins keep
+    natural NYC clustering — coordinates are never modified.
+    """
     if len(pins) <= limit:
         return pins
-
-    radius = get_scan_radius_miles()
-    lat_scale = radius / 69.0
-    lng_scale = radius / (69.0 * max(0.2, math.cos(math.radians(center.lat))))
-    grid_n = 10
-    buckets: dict[tuple[int, int], list[SwarmPin]] = {}
-
-    for pin in pins:
-        dy = (pin.lat - center.lat) / lat_scale if lat_scale else 0.0
-        dx = (pin.lng - center.lng) / lng_scale if lng_scale else 0.0
-        if dx * dx + dy * dy > 1.05:
-            continue
-        ci = max(0, min(grid_n - 1, int((dx + 1) * 0.5 * grid_n)))
-        cj = max(0, min(grid_n - 1, int((dy + 1) * 0.5 * grid_n)))
-        buckets.setdefault((ci, cj), []).append(pin)
-
-    def _dist_m(p: SwarmPin) -> float:
-        return _haversine_meters(center.lat, center.lng, p.lat, p.lng)
-
-    out: list[SwarmPin] = []
-    for cell_pins in buckets.values():
-        out.append(min(cell_pins, key=_dist_m))
-
-    if len(out) < limit:
-        chosen = {(round(p.lat, 5), round(p.lng, 5)) for p in out}
-        for pin in sorted(pins, key=_dist_m):
-            key = (round(pin.lat, 5), round(pin.lng, 5))
-            if key in chosen:
-                continue
-            chosen.add(key)
-            out.append(pin)
-            if len(out) >= limit:
-                break
-
-    out.sort(key=_dist_m)
-    return out[:limit]
+    shuffled = sorted(pins, key=lambda p: _swarm_pin_shuffle_key(p, center))
+    return shuffled[:limit]
 
 
 def build_swarm(
