@@ -6,7 +6,7 @@ import os
 from datetime import datetime, timedelta, timezone
 
 from models.schemas import Coordinate, FlightExposure
-from services.city_data import _get_client
+from services.city_data import _get_client, get_scan_radius_miles
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,7 @@ def compute_exposure(
     coord: Coordinate,
     *,
     days: int = 7,
-    radius_miles: float = 1.5,
+    radius_miles: float | None = None,
     max_alt_ft: int = 10000,
 ) -> FlightExposure | None:
     """
@@ -35,15 +35,22 @@ def compute_exposure(
     This is intentionally simple: good enough for UX iteration.
 
     Tune without code changes: EXPOSURE_DAYS (1–30), EXPOSURE_RADIUS_MILES (0.25–10).
+    Defaults to SCAN_RADIUS_MILES when EXPOSURE_RADIUS_MILES is unset.
     """
     try:
         days = max(1, min(30, int(os.getenv("EXPOSURE_DAYS", str(days)))))
     except ValueError:
         days = 7
+    default_radius = get_scan_radius_miles()
+    if radius_miles is not None:
+        default_radius = radius_miles
     try:
-        radius_miles = max(0.25, min(10.0, float(os.getenv("EXPOSURE_RADIUS_MILES", str(radius_miles)))))
+        radius_miles = max(
+            0.25,
+            min(10.0, float(os.getenv("EXPOSURE_RADIUS_MILES", str(default_radius)))),
+        )
     except ValueError:
-        radius_miles = 1.5
+        radius_miles = get_scan_radius_miles()
 
     try:
         supabase = _get_client()

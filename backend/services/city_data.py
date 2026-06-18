@@ -583,8 +583,11 @@ def build_zones(crime: list[dict], reports_311: list[dict], permits: list[dict])
             ))
 
     for row in permits[:3]:
-        if row.get("lat") and row.get("lng"):
-            zones.append(Zone(
+        if not row.get("lat") or not row.get("lng"):
+            continue
+        if not is_active_permit(row):
+            continue
+        zones.append(Zone(
                 lat=row["lat"], lng=row["lng"],
                 radius_meters=180, color="#f97316",
                 label=f"Permit: {row.get('permit_type', 'Construction')}",
@@ -676,6 +679,11 @@ _PIN_TYPE_RANK: dict[str, int] = {
 }
 
 
+def is_active_permit(row: dict) -> bool:
+    """True for DOB permit rows we treat as currently active."""
+    return (row.get("permit_status", "") or "").lower() in ("issued", "active", "renewed")
+
+
 def get_map_swarm_max_pins() -> int:
     """Max map pins to render (all are real; scoring still uses full in-radius counts)."""
     try:
@@ -747,6 +755,8 @@ def build_swarm(
 
     for row in permits:
         if not row.get("lat") or not row.get("lng"):
+            continue
+        if not is_active_permit(row):
             continue
         try:
             lat, lng = float(row["lat"]), float(row["lng"])

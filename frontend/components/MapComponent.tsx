@@ -94,6 +94,11 @@ interface Props {
 }
 
 export default function MapComponent({ mapData, logistics, activeRoute, flightExposure }: Props) {
+  const scanRadiusMi = mapData.scan_radius_miles ?? 2;
+  const scanRadiusLabel = Number.isInteger(scanRadiusMi)
+    ? `${scanRadiusMi}-mi`
+    : `${scanRadiusMi.toFixed(1)}-mi`;
+
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
   const trackPlaneMarkersRef = useRef<mapboxgl.Marker[]>([]);
@@ -730,8 +735,8 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
         </h3>
         <span className="text-slate-400 text-[10px] font-bold bg-slate-900 px-3 py-1 rounded-full border border-slate-700 italic hidden md:block">
           {mapData.swarm_location_total != null && mapData.swarm_location_total > mapData.swarm.length
-            ? `Showing ${mapData.swarm.length} of ${mapData.swarm_location_total} real NYC locations (2-mi) · `
-            : `${mapData.swarm.length} real NYC locations (2-mi) · `}
+            ? `Showing ${mapData.swarm.length} of ${mapData.swarm_location_total} real NYC locations (${scanRadiusLabel}) · `
+            : `${mapData.swarm.length} real NYC locations (${scanRadiusLabel}) · `}
           Scroll to zoom · Hover pins for details
         </span>
       </div>
