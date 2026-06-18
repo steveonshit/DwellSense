@@ -13,6 +13,7 @@ import logging
 import google.generativeai as genai
 from google.api_core import exceptions as google_exceptions
 from models.schemas import Coordinate, FlightPath, LogisticsCard
+from services import city_data
 from services.threat_card_layout import (
     cards_from_specs_and_bullets,
     compute_risk_from_counts,
@@ -23,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # Bump this when bullet formatting / merge rules change so in-memory caches don't
 # serve stale card text across deploys.
-_ANALYSIS_CACHE_VERSION = "2026-04-28-wellness-score-v2"
+_ANALYSIS_CACHE_VERSION = "2026-06-18-fact-lock-all-cards"
 
 # Allow override via env (Railway / local).
 # Default raised so Gemini can finish during end-to-end debugging.
@@ -146,6 +147,12 @@ Rules:
 - Write in plain English a renter can understand.
 - Each bullet must be short (max ~80 characters). One sentence.
 - Use the exact numbers in the brief when possible. Never invent stats.
+- high_churn = eviction filings only. Never mention construction permits there.
+- demolitions = DOB active permits plus 311 construction complaints (separate counts in brief).
+- noise_schedule = 311 noise complaints only (SR311_NOISE_30D), not all 311.
+- tenant_warnings = we do not have HPD violation data; do not claim violations at this address.
+- oven_effect = general orientation guidance only; not from NYC Open Data.
+- flight_path = only when FLIGHT line says a path exists inside the scan radius.
 - If the brief indicates there are zero recent items for a card, the 3rd bullet must be:
   "No recent reports!"
 - No markdown. No HTML. No nested JSON inside strings.
@@ -210,6 +217,27 @@ def _count_active_permits(data: list[dict]) -> int:
     if not data:
         return 0
     return sum(1 for r in data if (r.get("permit_status", "") or "").lower() in ("issued", "active", "renewed"))
+
+
+def _311_blob(row: dict) -> str:
+    ctype = str(row.get("complaint_type") or "")
+    desc = str(row.get("descriptor") or "")
+    return f"{ctype} {desc}".lower()
+
+
+def _count_311_noise(data: list[dict]) -> int:
+    if not data:
+        return 0
+    keys = ("noise", "loud", "music", "party")
+    return sum(1 for row in data if any(k in _311_blob(row) for k in keys))
+
+
+def _count_311_construction(data: list[dict]) -> int:
+    """311 building / construction complaints (distinct from DOB permits)."""
+    if not data:
+        return 0
+    keys = ("construction", "building", "scaffold", "demolition", "crane")
+    return sum(1 for row in data if any(k in _311_blob(row) for k in keys))
 
 
 def _summarize_logistics(logistics: list[LogisticsCard]) -> str:
@@ -287,6 +315,8 @@ def _apply_no_recent_reports_bottom_line(
     reports_count: int,
     permit_count: int,
     eviction_count: int,
+    noise_count: int,
+    construction_311_count: int,
     flight_path: FlightPath | None,
 ) -> dict[str, list[str]]:
     """
@@ -306,8 +336,8 @@ def _apply_no_recent_reports_bottom_line(
     _set("police_calls", crime_count > 0)
     _set("area_safety", crime_count > 0)
     _set("reports_311", reports_count > 0)
-    _set("noise_schedule", reports_count > 0)
-    _set("demolitions", permit_count > 0)
+    _set("noise_schedule", noise_count > 0)
+    _set("demolitions", permit_count > 0 or construction_311_count > 0)
     _set("high_churn", eviction_count > 0)
     _set("flight_path", flight_path is not None)
 
@@ -336,38 +366,38 @@ def _fallback_bullets_by_id(
     evictions_bottom = _no_recent_reports_text() if eviction_count == 0 else bullet_extra
     return {
         "high_churn": [
-            "Eviction records found nearby.",
-            "High turnover signals problem landlords.",
+            f"{eviction_count} eviction filing(s) in scan radius." if eviction_count else "No eviction filings in scan radius.",
+            "Turnover risk is based on housing-court records only.",
             evictions_bottom,
         ],
         "police_calls": [
-            f"{crime_count} incidents logged in last 30 days.",
-            "See blue zones on the threat map.",
+            f"{crime_count} NYPD complaint(s) in the last 30 days.",
+            "See crime pins on the threat map.",
             crime_bottom,
         ],
         "area_safety": [
-            "Crime data pulled from NYC Open Data.",
-            "See red zones on the threat map.",
+            f"{crime_count} crime report(s) within the scan radius." if crime_count else "No NYPD crime reports in the scan radius.",
+            "Safety view uses the same NYPD Open Data feed as the map.",
             crime_bottom,
         ],
         "tenant_warnings": [
-            "Check HPD building violations for this address.",
-            "Past violations indicate maintenance neglect.",
+            "HPD housing-violation records are not loaded in this scan.",
+            "Check NYC HPD online for this building's violation history.",
             bullet_extra,
         ],
         "demolitions": [
-            f"{permit_count} active permits found nearby.",
-            "Heavy equipment possible during business hours.",
+            f"{permit_count} active DOB permit(s) in scan radius.",
+            "Map may also show 311 building/construction complaints separately.",
             permits_bottom,
         ],
         "noise_schedule": [
-            "311 noise complaints logged nearby.",
-            "Check for commercial loading docks on the block.",
+            "311 noise complaints in the scan radius.",
+            "Commercial loading and traffic can add off-hours noise.",
             reports_bottom,
         ],
         "flight_path": [
-            "Flight corridor analysis computed.",
-            "See cyan flight path line on map.",
+            "Flight path analysis uses ADS-B when available.",
+            "Only paths within the scan radius are drawn on the map.",
             bullet_extra,
         ],
         "reports_311": [
@@ -376,9 +406,9 @@ def _fallback_bullets_by_id(
             reports_bottom,
         ],
         "oven_effect": [
-            "West-facing units trap afternoon heat.",
-            "Check unit orientation before signing.",
-            bullet_extra,
+            "Unit orientation affects afternoon heat and AC costs.",
+            "Ask which way windows face before signing a lease.",
+            "General rental tip — not sourced from NYC Open Data.",
         ],
     }
 
@@ -402,49 +432,182 @@ def _merge_bullets_with_fallback(
 def _enforce_fact_locked_bullets(
     bullets_by_id: dict[str, list[str]],
     *,
+    crime_count: int,
+    reports_count: int,
     permit_count: int,
     eviction_count: int,
+    noise_count: int,
+    construction_311_count: int,
+    flight_path: FlightPath | None,
     scan_radius_miles: float,
 ) -> dict[str, list[str]]:
     """
-    Reliability guardrail: prevent cross-card factual contradictions.
-
-    Gemini writes prose; these bullets must never claim the opposite of what our
-    datasets show. We also keep certain cards on-topic (e.g. Tenant Churn must
-    not make statements about construction permits).
+    Reliability guardrail: every card must match municipal / flight data we actually load.
+    Gemini prose is overwritten when it could contradict counts or cite unavailable datasets.
     """
     out = {k: _normalize_three(v) for k, v in (bullets_by_id or {}).items()}
+    r = scan_radius_miles
+    no_data = _no_recent_reports_text()
 
-    # Tenant Churn (high_churn) is eviction/court-record driven only.
+    # 1. TENANT CHURN — evictions only (never permits / construction).
     if eviction_count <= 0:
         out["high_churn"] = [
-            f"No recent eviction filings found within ~{scan_radius_miles:g} miles.",
-            "Lower churn signals more stable tenancy in the immediate area.",
-            out.get("high_churn", ["", "", ""])[2] or _no_recent_reports_text(),
+            f"No eviction filings found within ~{r:g} miles.",
+            "Lower turnover risk on housing-court records in this radius.",
+            no_data,
         ]
     else:
         out["high_churn"] = [
-            f"{eviction_count} eviction filing(s) found within ~{scan_radius_miles:g} miles.",
-            "Higher churn can signal landlord issues or unstable tenancy.",
+            f"{eviction_count} eviction filing(s) within ~{r:g} miles.",
+            "Higher turnover can signal landlord or tenancy instability.",
             out.get("high_churn", ["", "", ""])[2] or "",
         ]
 
-    # Demolitions (permits) must reflect active-permit count, not “none” when >0.
-    if permit_count <= 0:
+    # 2. POLICE CALLS — NYPD crime complaints.
+    if crime_count <= 0:
+        out["police_calls"] = [
+            f"No NYPD complaints in the last 30 days within ~{r:g} miles.",
+            "Police-call volume looks low on NYC Open Data for this radius.",
+            no_data,
+        ]
+    else:
+        out["police_calls"] = [
+            f"{crime_count} NYPD complaint(s) in the last 30 days (~{r:g} mi).",
+            "See matching pins on the threat map.",
+            out.get("police_calls", ["", "", ""])[2] or "",
+        ]
+
+    # 3. AREA SAFETY — same crime feed, safety framing.
+    if crime_count <= 0:
+        out["area_safety"] = [
+            f"No NYPD crime reports within ~{r:g} miles in the last 30 days.",
+            "Area looks quieter on official crime data for this scan.",
+            no_data,
+        ]
+    else:
+        out["area_safety"] = [
+            f"{crime_count} crime report(s) within ~{r:g} miles.",
+            "Review crime pins and zone halos on the map.",
+            out.get("area_safety", ["", "", ""])[2] or "",
+        ]
+
+    # 4. TENANT WARNINGS — HPD violations are not ingested yet.
+    out["tenant_warnings"] = [
+        "HPD housing-violation data is not included in this scan yet.",
+        "Look up this building on the NYC HPD portal before signing.",
+        "We do not claim violations without a real HPD feed.",
+    ]
+
+    # 5. DEMOLITIONS — DOB active permits + 311 construction complaints.
+    parts: list[str] = []
+    if permit_count > 0:
+        parts.append(f"{permit_count} active DOB permit(s)")
+    if construction_311_count > 0:
+        parts.append(f"{construction_311_count} 311 building/construction report(s)")
+    if parts:
+        summary = " and ".join(parts) + f" within ~{r:g} miles."
         out["demolitions"] = [
-            f"No active DOB permits found within ~{scan_radius_miles:g} miles.",
-            "Construction risk appears lower right now, but conditions can change quickly.",
-            out.get("demolitions", ["", "", ""])[2] or _no_recent_reports_text(),
+            summary,
+            "Construction pins on the map may be DOB permits or 311 complaints.",
+            out.get("demolitions", ["", "", ""])[2] or "",
         ]
     else:
         out["demolitions"] = [
-            f"{permit_count} active DOB permit(s) found within ~{scan_radius_miles:g} miles.",
-            "Construction activity may mean noise, trucks, and sidewalk disruption.",
-            out.get("demolitions", ["", "", ""])[2] or "",
+            f"No active DOB permits or 311 construction complaints within ~{r:g} miles.",
+            "Nearby construction risk looks lower on city records right now.",
+            no_data,
         ]
 
-    # If Gemini leaked "permit"/"construction" into Tenant Churn, it's now overwritten above.
+    # 6. NOISE SCHEDULE — noise-specific 311 only (not all 311).
+    if noise_count <= 0:
+        out["noise_schedule"] = [
+            f"No 311 noise complaints within ~{r:g} miles in the last 30 days.",
+            "Off-hours noise may still come from traffic or businesses.",
+            no_data,
+        ]
+    else:
+        out["noise_schedule"] = [
+            f"{noise_count} 311 noise complaint(s) within ~{r:g} miles.",
+            "Check map noise pins and commercial blocks nearby.",
+            out.get("noise_schedule", ["", "", ""])[2] or "",
+        ]
+
+    # 7. FLIGHT PATH — only paths inside scan radius are returned to the client.
+    if flight_path is None:
+        out["flight_path"] = [
+            f"No aircraft tracks within ~{r:g} miles of this address.",
+            "Flight lines appear only when ADS-B passed the scan radius.",
+            no_data,
+        ]
+    else:
+        label = (flight_path.label or "Recent flight track").strip()
+        if len(label) > 72:
+            label = label[:69] + "..."
+        closest = flight_path.closest_miles
+        closest_txt = f" (closest {closest:.1f} mi)" if closest is not None else ""
+        out["flight_path"] = [
+            f"Flight activity within ~{r:g} mi{closest_txt}: {label}",
+            "Cyan lines on the map are real ADS-B or corridor hints in radius.",
+            out.get("flight_path", ["", "", ""])[2] or "",
+        ]
+
+    # 8. 311 REPORTS — all 311 in radius.
+    if reports_count <= 0:
+        out["reports_311"] = [
+            f"No 311 service requests within ~{r:g} miles in the last 30 days.",
+            "Neighbor complaint volume looks low on NYC Open Data.",
+            no_data,
+        ]
+    else:
+        out["reports_311"] = [
+            f"{reports_count} 311 report(s) within ~{r:g} miles.",
+            "Hover swarm pins on the map for complaint types.",
+            out.get("reports_311", ["", "", ""])[2] or "",
+        ]
+
+    # 9. OVEN EFFECT — general guidance only (no municipal sun-exposure feed).
+    out["oven_effect"] = [
+        "Afternoon heat depends on which way the unit faces.",
+        "West- and south-facing windows can raise summer AC costs.",
+        "General rental tip — not sourced from NYC Open Data.",
+    ]
+
     return out
+
+
+def _finalize_threat_bullets(
+    bullets_by_id: dict[str, list[str]],
+    *,
+    crime_count: int,
+    reports_count: int,
+    permit_count: int,
+    eviction_count: int,
+    noise_count: int,
+    construction_311_count: int,
+    flight_path: FlightPath | None,
+    scan_radius_miles: float,
+) -> dict[str, list[str]]:
+    stepped = _apply_no_recent_reports_bottom_line(
+        bullets_by_id,
+        crime_count=crime_count,
+        reports_count=reports_count,
+        permit_count=permit_count,
+        eviction_count=eviction_count,
+        noise_count=noise_count,
+        construction_311_count=construction_311_count,
+        flight_path=flight_path,
+    )
+    return _enforce_fact_locked_bullets(
+        stepped,
+        crime_count=crime_count,
+        reports_count=reports_count,
+        permit_count=permit_count,
+        eviction_count=eviction_count,
+        noise_count=noise_count,
+        construction_311_count=construction_311_count,
+        flight_path=flight_path,
+        scan_radius_miles=scan_radius_miles,
+    )
 
 
 async def analyze(
@@ -470,6 +633,8 @@ async def analyze(
     reports_count = len(reports_311)
     permit_count = _count_active_permits(permits)
     eviction_count = len(evictions)
+    noise_count = _count_311_noise(reports_311)
+    construction_311_count = _count_311_construction(reports_311)
     scan_radius_miles = city_data.get_scan_radius_miles()
 
     raw_gemini_env = (os.getenv("GEMINI_API_KEY") or "").strip()
@@ -491,6 +656,7 @@ async def analyze(
     key_fp = hashlib.md5(gemini_api_key.encode()).hexdigest()[:12] if gemini_api_key else "none"
     cache_key = hashlib.md5(
         f"{_ANALYSIS_CACHE_VERSION}:{address}:{crime_count}:{reports_count}:{permit_count}:{eviction_count}:"
+        f"n{noise_count}c{construction_311_count}:"
         f"c{int(crime_capped)}r{int(reports_capped)}p{int(permits_capped)}e{int(evictions_capped)}:{key_fp}".encode()
     ).hexdigest()
     if cache_key in _analysis_cache:
@@ -523,18 +689,15 @@ async def analyze(
         fb = _fallback_bullets_by_id(
             crime_count, reports_count, permit_count, eviction_count, _third_bullet_no_key()
         )
-        fb = _apply_no_recent_reports_bottom_line(
+        fb = _finalize_threat_bullets(
             fb,
             crime_count=crime_count,
             reports_count=reports_count,
             permit_count=permit_count,
             eviction_count=eviction_count,
+            noise_count=noise_count,
+            construction_311_count=construction_311_count,
             flight_path=flight_path,
-        )
-        fb = _enforce_fact_locked_bullets(
-            fb,
-            permit_count=permit_count,
-            eviction_count=eviction_count,
             scan_radius_miles=scan_radius_miles,
         )
         result = {
@@ -573,6 +736,8 @@ async def analyze(
         f"COORD: {coord.lat:.5f},{coord.lng:.5f}\n"
         f"CRIME_30D_1MI: {_summarize_crime(crime)}\n"
         f"SR311_30D_1MI: {_summarize_311(reports_311)}\n"
+        f"SR311_NOISE_30D: count={noise_count}\n"
+        f"SR311_CONSTRUCTION_30D: count={construction_311_count}\n"
         f"PERMITS_90D_1MI: {_summarize_permits(permits)}\n"
         f"EVICTIONS_NEARBY: count={eviction_count}\n"
         f"LOGISTICS: {_summarize_logistics(logistics)}\n"
@@ -584,13 +749,16 @@ async def analyze(
     template_fb = _fallback_bullets_by_id(
         crime_count, reports_count, permit_count, eviction_count, _third_bullet_ai_failed()
     )
-    template_fb = _apply_no_recent_reports_bottom_line(
+    template_fb = _finalize_threat_bullets(
         template_fb,
         crime_count=crime_count,
         reports_count=reports_count,
         permit_count=permit_count,
         eviction_count=eviction_count,
+        noise_count=noise_count,
+        construction_311_count=construction_311_count,
         flight_path=flight_path,
+        scan_radius_miles=scan_radius_miles,
     )
 
     async def _call_gemini_bullets() -> dict[str, list[str]]:
@@ -616,18 +784,15 @@ async def analyze(
             row = inner.get(cid)
             gemini_map[cid] = row if isinstance(row, list) else []
         merged = _merge_bullets_with_fallback(template_fb, gemini_map)
-        merged = _apply_no_recent_reports_bottom_line(
+        return _finalize_threat_bullets(
             merged,
             crime_count=crime_count,
             reports_count=reports_count,
             permit_count=permit_count,
             eviction_count=eviction_count,
+            noise_count=noise_count,
+            construction_311_count=construction_311_count,
             flight_path=flight_path,
-        )
-        return _enforce_fact_locked_bullets(
-            merged,
-            permit_count=permit_count,
-            eviction_count=eviction_count,
             scan_radius_miles=scan_radius_miles,
         )
 
