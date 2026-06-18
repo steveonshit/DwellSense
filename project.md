@@ -467,7 +467,7 @@ Expected: `4` and a real venue name (not an error).
 | Variable | Purpose |
 |----------|---------|
 | `EXPOSURE_DAYS` | Optional. **1–30**, default **7** in `compute_exposure`. Lookback for exposure stats. |
-| `EXPOSURE_RADIUS_MILES` | Optional. **0.25–10**, default **1.5** mi. Count samples within this radius of the property. |
+| `EXPOSURE_RADIUS_MILES` | Optional. **0.25–10**, default **`SCAN_RADIUS_MILES`** (2 mi). Count samples within this radius of the property. |
 
 ### Frontend (Vercel / local)
 
