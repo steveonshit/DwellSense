@@ -7,9 +7,13 @@ only has to write bullet text (see ai_analysis.py).
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from typing import Any
 
 from services import city_data
+
+# High 311 volume should temper the wellness label even when crime is low.
+_HIGH_311_REPORTS_THRESHOLD = 200
 
 # Order matches the UI carousel / original Gemini system prompt.
 CARD_SPECS: list[dict[str, Any]] = [
@@ -65,7 +69,7 @@ CARD_SPECS: list[dict[str, Any]] = [
         "id": "flight_path",
         "emoji": "✈️",
         "title": "FLIGHT PATH",
-        "subtitle": "Proximity to NYC airport approach corridors.",
+        "subtitle": "ADS-B aircraft tracks within the scan radius.",
         "border_color": "#06b6d4",
         "text_color": "#67e8f9",
     },
@@ -90,6 +94,58 @@ CARD_SPECS: list[dict[str, Any]] = [
 
 def ordered_card_ids() -> list[str]:
     return [c["id"] for c in CARD_SPECS]
+
+
+@dataclass(frozen=True)
+class CardChromeContext:
+    crime_count: int = 0
+    reports_count: int = 0
+    permit_count: int = 0
+    eviction_count: int = 0
+    noise_count: int = 0
+    construction_311_count: int = 0
+    has_flight_path: bool = False
+
+
+def resolve_card_colors(card_id: str, ctx: CardChromeContext) -> tuple[str, str]:
+    """Border + subtitle colors reflect whether this card's primary signal is elevated."""
+    calm_blue = ("#3b82f6", "#93c5fd")
+    calm_teal = ("#14b8a6", "#5eead4")
+    calm_slate = ("#64748b", "#94a3b8")
+    good_green = ("#22c55e", "#86efac")
+    warn_amber = ("#f59e0b", "#fcd34d")
+    alert_rose = ("#f43f5e", "#fda4af")
+    alert_orange = ("#f97316", "#fdba74")
+    alert_purple = ("#a855f7", "#d8b4fe")
+    alert_cyan = ("#06b6d4", "#67e8f9")
+    alert_yellow = ("#eab308", "#fde047")
+    alert_red = ("#ef4444", "#fca5a5")
+    calm_purple = ("#7c3aed", "#c4b5fd")
+
+    if card_id == "high_churn":
+        return alert_rose if ctx.eviction_count > 0 else good_green
+    if card_id == "police_calls":
+        return alert_rose if ctx.crime_count > 0 else calm_blue
+    if card_id == "area_safety":
+        return warn_amber if ctx.crime_count > 0 else calm_teal
+    if card_id == "tenant_warnings":
+        return calm_purple
+    if card_id == "demolitions":
+        return alert_orange if (ctx.permit_count > 0 or ctx.construction_311_count > 0) else calm_slate
+    if card_id == "noise_schedule":
+        return alert_yellow if ctx.noise_count > 0 else calm_slate
+    if card_id == "flight_path":
+        return alert_cyan if ctx.has_flight_path else calm_slate
+    if card_id == "reports_311":
+        if ctx.reports_count >= _HIGH_311_REPORTS_THRESHOLD:
+            return alert_purple
+        return calm_purple if ctx.reports_count > 0 else calm_slate
+    if card_id == "oven_effect":
+        return alert_red
+    spec = next((c for c in CARD_SPECS if c["id"] == card_id), None)
+    if spec:
+        return spec["border_color"], spec["text_color"]
+    return calm_slate
 
 
 def compute_risk_from_counts(
@@ -147,6 +203,11 @@ def compute_risk_from_counts(
 
     safety_score = int(round(max(0.0, min(100.0, 100 - raw_hazard))))
 
+    # Dense 311 neighborhoods should not read as "strong signals" when crime is quiet.
+    if reports_count >= _HIGH_311_REPORTS_THRESHOLD:
+        penalty = min(30, int(6 * math.log1p(reports_count / 40)))
+        safety_score = max(0, safety_score - penalty)
+
     # If any dataset hits our fetch cap, the true neighborhood density may be higher than
     # the counted rows. Don't claim a "perfect" safety score when we're truncated.
     if capped:
@@ -165,6 +226,11 @@ def compute_risk_from_counts(
     suffix_parts: list[str] = []
     if capped:
         suffix_parts.append("Counts may be capped by our data sample limits in very dense areas.")
+    if reports_count >= _HIGH_311_REPORTS_THRESHOLD:
+        suffix_parts.append(
+            f"High 311 volume ({reports_count} complaints nearby) — see the 311 card and map pins; "
+            "the wellness score weights crime and evictions more than every complaint type."
+        )
 
     scan_mi = city_data.get_scan_radius_miles()
     risk_description = (
@@ -182,8 +248,12 @@ def compute_risk_from_counts(
     }
 
 
-def cards_from_specs_and_bullets(bullets_by_id: dict[str, list[str]]) -> list[dict[str, Any]]:
+def cards_from_specs_and_bullets(
+    bullets_by_id: dict[str, list[str]],
+    chrome: CardChromeContext | None = None,
+) -> list[dict[str, Any]]:
     """Merge fixed chrome with three bullets per card (order follows CARD_SPECS)."""
+    ctx = chrome or CardChromeContext()
     out: list[dict[str, Any]] = []
     for spec in CARD_SPECS:
         cid = spec["id"]
@@ -193,5 +263,6 @@ def cards_from_specs_and_bullets(bullets_by_id: dict[str, list[str]]) -> list[di
         b = [str(x).strip() if x is not None else "" for x in raw[:3]]
         while len(b) < 3:
             b.append("")
-        out.append({**spec, "bullets": b})
+        border_color, text_color = resolve_card_colors(cid, ctx)
+        out.append({**spec, "border_color": border_color, "text_color": text_color, "bullets": b})
     return out

@@ -15,6 +15,7 @@ from google.api_core import exceptions as google_exceptions
 from models.schemas import Coordinate, FlightPath, LogisticsCard
 from services import city_data
 from services.threat_card_layout import (
+    CardChromeContext,
     cards_from_specs_and_bullets,
     compute_risk_from_counts,
     ordered_card_ids,
@@ -24,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 # Bump this when bullet formatting / merge rules change so in-memory caches don't
 # serve stale card text across deploys.
-_ANALYSIS_CACHE_VERSION = "2026-06-18-fact-lock-all-cards"
+_ANALYSIS_CACHE_VERSION = "2026-06-18-ux-bottom-lines-chrome-score"
 
 # Allow override via env (Railway / local).
 # Default raised so Gemini can finish during end-to-end debugging.
@@ -153,8 +154,7 @@ Rules:
 - tenant_warnings = we do not have HPD violation data; do not claim violations at this address.
 - oven_effect = general orientation guidance only; not from NYC Open Data.
 - flight_path = only when FLIGHT line says a path exists inside the scan radius.
-- If the brief indicates there are zero recent items for a card, the 3rd bullet must be:
-  "No recent reports!"
+- If the brief indicates there are zero recent items for a card, the 3rd bullet should be a short card-specific line (not a generic exclamation).
 - No markdown. No HTML. No nested JSON inside strings.
 
 Return ONLY valid JSON (no markdown fences, no extra text) in this exact shape:
@@ -305,7 +305,43 @@ def _third_bullet_ai_failed() -> str:
 
 
 def _no_recent_reports_text() -> str:
+    """Deprecated generic line — prefer _card_bottom_line in fact-lock."""
     return "No recent reports!"
+
+
+def _card_bottom_line(
+    card_id: str,
+    *,
+    scan_radius_miles: float,
+    crime_count: int,
+    reports_count: int,
+    permit_count: int,
+    eviction_count: int,
+    noise_count: int,
+    construction_311_count: int,
+    flight_path: FlightPath | None,
+) -> str:
+    """Third bullet when a card has no signal in its primary dataset."""
+    r = scan_radius_miles
+    if card_id == "high_churn":
+        return f"No housing-court eviction filings within ~{r:g} miles."
+    if card_id == "police_calls":
+        return "NYPD complaint volume is low for the last 30 days here."
+    if card_id == "area_safety":
+        return "Official crime data shows no reports in the last 30 days here."
+    if card_id == "demolitions":
+        return "Construction activity looks quiet on DOB and 311 records here."
+    if card_id == "noise_schedule":
+        return f"No noise-specific 311 complaints within ~{r:g} miles."
+    if card_id == "flight_path":
+        return "Map paths appear only when ADS-B tracks enter the scan radius."
+    if card_id == "reports_311":
+        return f"No 311 service requests within ~{r:g} miles in the last 30 days."
+    if card_id == "tenant_warnings":
+        return "We do not claim violations without a real HPD feed."
+    if card_id == "oven_effect":
+        return "General rental tip — not sourced from NYC Open Data."
+    return "No matching city records for this card in the scan radius."
 
 
 def _apply_no_recent_reports_bottom_line(
@@ -318,6 +354,7 @@ def _apply_no_recent_reports_bottom_line(
     noise_count: int,
     construction_311_count: int,
     flight_path: FlightPath | None,
+    scan_radius_miles: float,
 ) -> dict[str, list[str]]:
     """
     The UI treats the 3rd bullet as the "bottom line".
@@ -330,7 +367,17 @@ def _apply_no_recent_reports_bottom_line(
             return
         row = out.get(cid) or ["", "", ""]
         row = _normalize_three(row)
-        row[2] = _no_recent_reports_text()
+        row[2] = _card_bottom_line(
+            cid,
+            scan_radius_miles=scan_radius_miles,
+            crime_count=crime_count,
+            reports_count=reports_count,
+            permit_count=permit_count,
+            eviction_count=eviction_count,
+            noise_count=noise_count,
+            construction_311_count=construction_311_count,
+            flight_path=flight_path,
+        )
         out[cid] = row
 
     _set("police_calls", crime_count > 0)
@@ -447,14 +494,26 @@ def _enforce_fact_locked_bullets(
     """
     out = {k: _normalize_three(v) for k, v in (bullets_by_id or {}).items()}
     r = scan_radius_miles
-    no_data = _no_recent_reports_text()
+
+    def _bottom(card_id: str) -> str:
+        return _card_bottom_line(
+            card_id,
+            scan_radius_miles=r,
+            crime_count=crime_count,
+            reports_count=reports_count,
+            permit_count=permit_count,
+            eviction_count=eviction_count,
+            noise_count=noise_count,
+            construction_311_count=construction_311_count,
+            flight_path=flight_path,
+        )
 
     # 1. TENANT CHURN — evictions only (never permits / construction).
     if eviction_count <= 0:
         out["high_churn"] = [
             f"No eviction filings found within ~{r:g} miles.",
             "Lower turnover risk on housing-court records in this radius.",
-            no_data,
+            _bottom("high_churn"),
         ]
     else:
         out["high_churn"] = [
@@ -468,7 +527,7 @@ def _enforce_fact_locked_bullets(
         out["police_calls"] = [
             f"No NYPD complaints in the last 30 days within ~{r:g} miles.",
             "Police-call volume looks low on NYC Open Data for this radius.",
-            no_data,
+            _bottom("police_calls"),
         ]
     else:
         out["police_calls"] = [
@@ -482,7 +541,7 @@ def _enforce_fact_locked_bullets(
         out["area_safety"] = [
             f"No NYPD crime reports within ~{r:g} miles in the last 30 days.",
             "Area looks quieter on official crime data for this scan.",
-            no_data,
+            _bottom("area_safety"),
         ]
     else:
         out["area_safety"] = [
@@ -515,7 +574,7 @@ def _enforce_fact_locked_bullets(
         out["demolitions"] = [
             f"No active DOB permits or 311 construction complaints within ~{r:g} miles.",
             "Nearby construction risk looks lower on city records right now.",
-            no_data,
+            _bottom("demolitions"),
         ]
 
     # 6. NOISE SCHEDULE — noise-specific 311 only (not all 311).
@@ -523,7 +582,7 @@ def _enforce_fact_locked_bullets(
         out["noise_schedule"] = [
             f"No 311 noise complaints within ~{r:g} miles in the last 30 days.",
             "Off-hours noise may still come from traffic or businesses.",
-            no_data,
+            _bottom("noise_schedule"),
         ]
     else:
         out["noise_schedule"] = [
@@ -537,7 +596,7 @@ def _enforce_fact_locked_bullets(
         out["flight_path"] = [
             f"No aircraft tracks within ~{r:g} miles of this address.",
             "Flight lines appear only when ADS-B passed the scan radius.",
-            no_data,
+            _bottom("flight_path"),
         ]
     else:
         label = (flight_path.label or "Recent flight track").strip()
@@ -547,7 +606,7 @@ def _enforce_fact_locked_bullets(
         closest_txt = f" (closest {closest:.1f} mi)" if closest is not None else ""
         out["flight_path"] = [
             f"Flight activity within ~{r:g} mi{closest_txt}: {label}",
-            "Cyan lines on the map are real ADS-B or corridor hints in radius.",
+            "Cyan lines on the map are real ADS-B tracks within the scan radius.",
             out.get("flight_path", ["", "", ""])[2] or "",
         ]
 
@@ -556,7 +615,7 @@ def _enforce_fact_locked_bullets(
         out["reports_311"] = [
             f"No 311 service requests within ~{r:g} miles in the last 30 days.",
             "Neighbor complaint volume looks low on NYC Open Data.",
-            no_data,
+            _bottom("reports_311"),
         ]
     else:
         out["reports_311"] = [
@@ -596,6 +655,7 @@ def _finalize_threat_bullets(
         noise_count=noise_count,
         construction_311_count=construction_311_count,
         flight_path=flight_path,
+        scan_radius_miles=scan_radius_miles,
     )
     return _enforce_fact_locked_bullets(
         stepped,
@@ -607,6 +667,27 @@ def _finalize_threat_bullets(
         construction_311_count=construction_311_count,
         flight_path=flight_path,
         scan_radius_miles=scan_radius_miles,
+    )
+
+
+def _card_chrome_ctx(
+    *,
+    crime_count: int,
+    reports_count: int,
+    permit_count: int,
+    eviction_count: int,
+    noise_count: int,
+    construction_311_count: int,
+    flight_path: FlightPath | None,
+) -> CardChromeContext:
+    return CardChromeContext(
+        crime_count=crime_count,
+        reports_count=reports_count,
+        permit_count=permit_count,
+        eviction_count=eviction_count,
+        noise_count=noise_count,
+        construction_311_count=construction_311_count,
+        has_flight_path=flight_path is not None,
     )
 
 
@@ -636,6 +717,15 @@ async def analyze(
     noise_count = _count_311_noise(reports_311)
     construction_311_count = _count_311_construction(reports_311)
     scan_radius_miles = city_data.get_scan_radius_miles()
+    chrome_ctx = _card_chrome_ctx(
+        crime_count=crime_count,
+        reports_count=reports_count,
+        permit_count=permit_count,
+        eviction_count=eviction_count,
+        noise_count=noise_count,
+        construction_311_count=construction_311_count,
+        flight_path=flight_path,
+    )
 
     raw_gemini_env = (os.getenv("GEMINI_API_KEY") or "").strip()
     gemini_api_key = _effective_gemini_key(raw_gemini_env)
@@ -702,7 +792,7 @@ async def analyze(
         )
         result = {
             **risk,
-            "threat_cards": cards_from_specs_and_bullets(fb),
+            "threat_cards": cards_from_specs_and_bullets(fb, chrome_ctx),
             "gemini_configured": False,
             "gemini_status": _pre_status,
             "gemini_latency_ms": None,
@@ -803,7 +893,7 @@ async def analyze(
             latency_ms = int((time.monotonic() - t0) * 1000)
             result = {
                 **risk,
-                "threat_cards": cards_from_specs_and_bullets(bullets_by_id),
+                "threat_cards": cards_from_specs_and_bullets(bullets_by_id, chrome_ctx),
                 "gemini_configured": True,
                 "gemini_status": "ok",
                 "gemini_latency_ms": latency_ms,
@@ -823,7 +913,7 @@ async def analyze(
             )
             result = {
                 **risk,
-                "threat_cards": cards_from_specs_and_bullets(template_fb),
+                "threat_cards": cards_from_specs_and_bullets(template_fb, chrome_ctx),
                 "gemini_configured": True,
                 "gemini_status": "timeout",
                 "gemini_latency_ms": latency_ms,
@@ -847,7 +937,7 @@ async def analyze(
             )
             result = {
                 **risk,
-                "threat_cards": cards_from_specs_and_bullets(template_fb),
+                "threat_cards": cards_from_specs_and_bullets(template_fb, chrome_ctx),
                 "gemini_configured": True,
                 "gemini_status": "error",
                 "gemini_latency_ms": latency_ms,
