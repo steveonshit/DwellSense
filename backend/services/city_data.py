@@ -530,39 +530,71 @@ def _classify_311(row: dict) -> tuple[str, str]:
     return "report", f"311: {complaint_type}"
 
 
+# Lower = higher priority when multiple record types share one geocode.
+_PIN_TYPE_RANK: dict[str, int] = {
+    "police": 0,
+    "fire": 1,
+    "construction": 2,
+    "permit": 3,
+    "water": 4,
+    "rat": 5,
+    "noise": 6,
+    "trash": 7,
+    "graffiti": 8,
+    "truck": 9,
+    "bus": 10,
+    "report": 11,
+}
+
+
 def build_swarm(crime: list[dict], reports_311: list[dict], permits: list[dict]) -> list[SwarmPin]:
-    """Builds a diverse micro-pin swarm for the map (max 100 pins total)."""
-    swarm: list[SwarmPin] = []
+    """
+    One pin per unique coordinate for every in-radius municipal row (already Haversine-filtered).
+    No arbitrary caps — the map shows the full 2-mile disk, not a subset along one edge.
+    """
+    grouped: dict[tuple[float, float], list[tuple[str, str, float, float]]] = {}
 
-    # Crime pins — up to 30
-    for row in crime[:30]:
-        if row.get("lat") and row.get("lng"):
-            swarm.append(SwarmPin(
-                lat=row["lat"], lng=row["lng"],
-                type="police",
-                label=f"NYPD: {row.get('crime_type', 'Police Activity')}",
-            ))
+    def _add(lat: float, lng: float, pin_type: str, label: str) -> None:
+        key = (round(lat, 5), round(lng, 5))
+        grouped.setdefault(key, []).append((pin_type, label, lat, lng))
 
-    # 311 pins — categorized, up to 50 total, max 15 per type
-    type_counts: dict[str, int] = {}
+    for row in crime:
+        if not row.get("lat") or not row.get("lng"):
+            continue
+        try:
+            lat, lng = float(row["lat"]), float(row["lng"])
+        except (TypeError, ValueError):
+            continue
+        _add(lat, lng, "police", f"NYPD: {row.get('crime_type', 'Police Activity')}")
+
     for row in reports_311:
         if not row.get("lat") or not row.get("lng"):
             continue
-        pin_type, label = _classify_311(row)
-        if type_counts.get(pin_type, 0) >= 15:
+        try:
+            lat, lng = float(row["lat"]), float(row["lng"])
+        except (TypeError, ValueError):
             continue
-        type_counts[pin_type] = type_counts.get(pin_type, 0) + 1
-        swarm.append(SwarmPin(lat=row["lat"], lng=row["lng"], type=pin_type, label=label))
-        if sum(type_counts.values()) >= 50:
-            break
+        pin_type, label = _classify_311(row)
+        _add(lat, lng, pin_type, label)
 
-    # Permit pins — up to 20
-    for row in permits[:20]:
-        if row.get("lat") and row.get("lng"):
-            swarm.append(SwarmPin(
-                lat=row["lat"], lng=row["lng"],
-                type="permit",
-                label=f"Permit: {row.get('permit_type', 'Construction')}",
-            ))
+    for row in permits:
+        if not row.get("lat") or not row.get("lng"):
+            continue
+        try:
+            lat, lng = float(row["lat"]), float(row["lng"])
+        except (TypeError, ValueError):
+            continue
+        _add(lat, lng, "permit", f"Permit: {row.get('permit_type', 'Construction')}")
+
+    swarm: list[SwarmPin] = []
+    for entries in grouped.values():
+        pin_type, label, lat, lng = min(
+            entries,
+            key=lambda e: (_PIN_TYPE_RANK.get(e[0], 99), e[1]),
+        )
+        count = len(entries)
+        if count > 1:
+            label = f"{label} ({count} records at this location)"
+        swarm.append(SwarmPin(lat=lat, lng=lng, type=pin_type, label=label))
 
     return swarm

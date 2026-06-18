@@ -66,6 +66,7 @@ export default function ResultsDashboard({ result, onReset }: Props) {
         />
 
         <MapComponent
+          key={`${result.coordinates.lat},${result.coordinates.lng}`}
           mapData={result.map_data}
           logistics={proximityCards}
           activeRoute={activeRoute}
