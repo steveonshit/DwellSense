@@ -675,10 +675,69 @@ _PIN_TYPE_RANK: dict[str, int] = {
 }
 
 
-def build_swarm(crime: list[dict], reports_311: list[dict], permits: list[dict]) -> list[SwarmPin]:
+def get_map_swarm_max_pins() -> int:
+    """Max map pins to render (all are real; scoring still uses full in-radius counts)."""
+    try:
+        return max(20, min(200, int(os.getenv("MAP_SWARM_MAX_PINS", "100"))))
+    except ValueError:
+        return 100
+
+
+def _sample_swarm_pins(
+    pins: list[SwarmPin],
+    center: Coordinate,
+    limit: int,
+) -> list[SwarmPin]:
+    """Pick a spatially spread subset of real pins (one per grid cell first)."""
+    if len(pins) <= limit:
+        return pins
+
+    radius = get_scan_radius_miles()
+    lat_scale = radius / 69.0
+    lng_scale = radius / (69.0 * max(0.2, math.cos(math.radians(center.lat))))
+    grid_n = 10
+    buckets: dict[tuple[int, int], list[SwarmPin]] = {}
+
+    for pin in pins:
+        dy = (pin.lat - center.lat) / lat_scale if lat_scale else 0.0
+        dx = (pin.lng - center.lng) / lng_scale if lng_scale else 0.0
+        if dx * dx + dy * dy > 1.05:
+            continue
+        ci = max(0, min(grid_n - 1, int((dx + 1) * 0.5 * grid_n)))
+        cj = max(0, min(grid_n - 1, int((dy + 1) * 0.5 * grid_n)))
+        buckets.setdefault((ci, cj), []).append(pin)
+
+    def _dist_m(p: SwarmPin) -> float:
+        return _haversine_meters(center.lat, center.lng, p.lat, p.lng)
+
+    out: list[SwarmPin] = []
+    for cell_pins in buckets.values():
+        out.append(min(cell_pins, key=_dist_m))
+
+    if len(out) < limit:
+        chosen = {(round(p.lat, 5), round(p.lng, 5)) for p in out}
+        for pin in sorted(pins, key=_dist_m):
+            key = (round(pin.lat, 5), round(pin.lng, 5))
+            if key in chosen:
+                continue
+            chosen.add(key)
+            out.append(pin)
+            if len(out) >= limit:
+                break
+
+    out.sort(key=_dist_m)
+    return out[:limit]
+
+
+def build_swarm(
+    crime: list[dict],
+    reports_311: list[dict],
+    permits: list[dict],
+    center: Coordinate,
+) -> tuple[list[SwarmPin], int]:
     """
-    One pin per unique coordinate for every in-radius municipal row (already Haversine-filtered).
-    No arbitrary caps — the map shows the full 2-mile disk, not a subset along one edge.
+    Build map pins from real municipal rows (already Haversine-filtered).
+    Returns (pins to render, total unique locations in radius).
     """
     grouped: dict[tuple[float, float], list[tuple[str, str, float, float]]] = {}
 
@@ -725,4 +784,8 @@ def build_swarm(crime: list[dict], reports_311: list[dict], permits: list[dict])
             label = f"{label} ({count} records at this location)"
         swarm.append(SwarmPin(lat=lat, lng=lng, type=pin_type, label=label))
 
-    return swarm
+    total = len(swarm)
+    max_pins = get_map_swarm_max_pins()
+    if total > max_pins:
+        swarm = _sample_swarm_pins(swarm, center, max_pins)
+    return swarm, total

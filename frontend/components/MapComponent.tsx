@@ -598,7 +598,10 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
           <span className="text-rose-500 animate-pulse">● Live Swarm</span>
         </h3>
         <span className="text-slate-400 text-[10px] font-bold bg-slate-900 px-3 py-1 rounded-full border border-slate-700 italic hidden md:block">
-          Scroll to zoom. Hover pins for details.
+          {mapData.swarm_location_total != null && mapData.swarm_location_total > mapData.swarm.length
+            ? `Showing ${mapData.swarm.length} of ${mapData.swarm_location_total} real NYC locations (2-mi) · `
+            : `${mapData.swarm.length} real NYC locations (2-mi) · `}
+          Scroll to zoom · Hover pins for details
         </span>
       </div>
 

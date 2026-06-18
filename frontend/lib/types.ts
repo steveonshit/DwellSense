@@ -96,6 +96,8 @@ export interface MapData {
   target: Coordinate;
   zones: Zone[];
   swarm: SwarmPin[];
+  /** Total unique real geocodes in the scan radius (may exceed swarm.length). */
+  swarm_location_total?: number | null;
   flight_paths?: FlightPath[];
   /** Back-compat: some responses include a single path */
   flight_path?: FlightPath | null;

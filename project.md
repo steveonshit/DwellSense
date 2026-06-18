@@ -20,6 +20,23 @@ Tagline: *Don’t sign a blind lease.*
 
 ---
 
+## Data integrity (non-negotiable)
+
+**ALWAYS USE REAL DATA. NEVER FAKE OR MAKE UP ANY DATA.**
+
+Every user-visible number, pin, score input, listing, and map marker must trace to a **real source** (NYC Open Data / Supabase municipal tables, Google Places, Yelp, Mapbox geocoding, ADS-B ingest, etc.).
+
+| Rule | Requirement |
+|------|-------------|
+| **No invented records** | Do not place pins, counts, or incidents that are not in the fetched datasets. |
+| **No synthetic fallbacks on the map** | Do not draw heuristic flight corridors, random jitter, or demo swarms when live data is missing — show **nothing** or label **unavailable**. |
+| **Truncation must be honest** | If the map shows a subset of real locations for readability, the UI must say so (e.g. “Showing 100 of 1,896 real locations”). Scoring and risk copy still use the **full** in-radius counts. |
+| **Unavailable means unavailable** | If an API or table has no data, return empty / `unavailable` — never approximate without clear labeling. |
+
+**Allowed (display-only, not new facts):** great-circle smoothing of **existing** ADS-B vertices for map rendering; merged label when multiple real records share one NYC geocode.
+
+---
+
 ## Repository Layout
 
 ```
@@ -628,6 +645,7 @@ Some queries are intentionally capped (e.g. dense Manhattan can hit limits). Whe
 ## Working Style (Production Standard)
 
 - **Reliability first**: treat this as a production system; avoid shortcuts and misleading data.
+- **ALWAYS USE REAL DATA. NEVER FAKE OR MAKE UP ANY DATA.** (See **Data integrity** above.)
 - **No fake outputs**: if a data source is unavailable, surface **unavailable** (with graceful degradation) rather than inventing approximations without clear labeling. **Exception:** map **display-only** flight line shaping is allowed when labeled as visual smoothing — API coordinates remain the backend truth unless you change server code.
 - **Local vs live site**: confirm whether work targets **localhost** or **production** before implementing or verifying; push to `main` and wait for Railway/Vercel deploy before expecting changes on the public URL.
 - **When giving operational instructions** (dashboards, env vars, deploy steps): provide them **clearly**, **grouped together**, and in **bullet-point format** with exact variable names/values.

@@ -11,6 +11,7 @@ We are building a **real, production website** for many users. Optimize for **re
 
 - Prefer **durable, production-grade** approaches (SLA-backed services, migrations, observability) over “demo” logic.
 - Avoid “fake” data: if a signal is unavailable, **say unavailable** (and degrade gracefully) rather than approximating without clear labeling.
+- **ALWAYS USE REAL DATA. NEVER FAKE OR MAKE UP ANY DATA.** See `project.md` → Data integrity.
 - Every change must consider **blast radius**, **failure modes**, and **rollback**.
 - Favor idempotent, repeatable operations: **migrations**, **CI**, **one-way safe deploy steps**.
 - Treat secrets securely: never paste secrets into chat; use **provider env vars** and **GitHub secrets**.

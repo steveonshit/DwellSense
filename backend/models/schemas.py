@@ -93,6 +93,8 @@ class MapData(BaseModel):
     target: Coordinate
     zones: list[Zone]
     swarm: list[SwarmPin]
+    # Unique real geocodes in the 2-mile scan (may exceed len(swarm) when map caps pins for readability).
+    swarm_location_total: int | None = None
     # Multiple nearby corridors (nearest first). `flight_path` is kept for backwards compatibility.
     flight_paths: list[FlightPath] = []
     flight_path: FlightPath | None = None
