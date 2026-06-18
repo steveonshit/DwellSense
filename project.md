@@ -12,7 +12,7 @@ This document describes the **DwellSense** codebase, architecture, deployment, a
 - Pulls nearby **crime**, **311**, **permits**, and **evictions** from **Supabase** (pre-loaded via a daily job)
 - Fetches **transit / grocery / retail** proximity via **Google Places API (New)**
 - Ranks the **top 4 restaurants & bars within 2 miles** via **Yelp Fusion API** (preferred) or **Google Places API (New)** fallback — real ratings + review counts, no invented rankings
-- Computes **flight overlays** (`FLIGHT_MODE`: **`auto`** prefers stable Supabase `adsb_samples` polylines from completed time buckets, else static corridors; **`static`** corridors only; **`live_adsb`** optional OpenSky per scan) and a **prototype flight exposure summary** (`flight_exposure`) when ingestion data exists
+- Computes **flight overlays** (`FLIGHT_MODE`: **`auto`** prefers stable Supabase `adsb_samples` polylines from completed time buckets, else no paths; **`static`** corridors only; **`live_adsb`** optional OpenSky per scan) and a **prototype flight exposure summary** (`flight_exposure`) when ingestion data exists
 - Builds a **Wellness Score** (0–100, where **100 is best**), **risk labels**, and **threat-card chrome** (titles, colors, emojis) in **Python**; **Google Gemini** writes only the **27 bullet strings** (three per card) from the same data brief
 - Renders results on a **Mapbox** map and carousels
 
@@ -154,7 +154,7 @@ Use this when explaining the system in a 3–5 minute presentation:
 8. **Supabase municipal rows are filtered to a true radius**
    - File: `backend/services/city_data.py`
    - Supabase queries use a fast lat/lng bounding-box prefilter.
-   - Returned rows are filtered with Haversine distance to keep only records inside the intended ~1 mile radius.
+   - Returned rows are filtered with Haversine distance to keep only records inside the intended **2 mile** radius.
 
 9. **Noisy 311 categories are filtered**
    - File: `backend/services/city_data.py`
@@ -171,9 +171,9 @@ Use this when explaining the system in a 3–5 minute presentation:
 
 11. **Backend computes flight paths**
     - File: `backend/services/flights.py`
-    - `FLIGHT_MODE=auto`: use stored Supabase `adsb_samples` polylines from a stable completed time bucket when available; otherwise fall back to static NYC corridor hints.
-    - `FLIGHT_MODE=static`: return only simplified corridor segments.
-    - `FLIGHT_MODE=live_adsb`: optionally call OpenSky during the scan, with strict budgets and static fallback.
+    - `FLIGHT_MODE=auto`: use stored Supabase `adsb_samples` polylines from a stable completed time bucket when available; otherwise return **no flight paths** (no synthetic corridors).
+    - `FLIGHT_MODE=static`: return only simplified corridor segments (explicit demo mode).
+    - `FLIGHT_MODE=live_adsb`: optionally call OpenSky during the scan, with strict budgets; returns real tracks only.
 
 12. **Backend computes optional flight exposure**
     - File: `backend/services/flight_exposure.py`
@@ -282,7 +282,7 @@ Geocoding uses Mapbox **Geocoding API** (`mapbox.places`) via `backend/services/
 
 ## What “Nearby” Means (Data Windows + Radius)
 
-This app intentionally uses **recent** municipal signals and a **true ~1 mile radius**.
+This app intentionally uses **recent** municipal signals and a **true 2 mile radius** (configurable via `SCAN_RADIUS_MILES`, default **2**).
 
 ### Time windows (intended behavior)
 
@@ -295,7 +295,7 @@ These windows are applied in **both** the Supabase query path and the NYC Open D
 
 ### Radius (important)
 
-Supabase queries are done as a fast **bounding-box prefilter** (lat/lng rectangle). After results are returned, rows are filtered by **Haversine distance** to keep only points within a true **1 mile** circle.
+Supabase queries are done as a fast **bounding-box prefilter** (lat/lng rectangle). After results are returned, rows are filtered by **Haversine distance** to keep only points within a true **2 mile** circle.
 
 ### 311 noise filtering (NYC reality)
 
@@ -433,7 +433,7 @@ Expected: `4` and a real venue name (not an error).
 | `PORT` | Railway sets this automatically |
 | `OPENSKY_USERNAME` | Optional. OpenSky username (higher rate limits for ADS‑B). |
 | `OPENSKY_PASSWORD` | Optional. OpenSky password. |
-| `FLIGHT_MODE` | **`auto`** (default): Supabase `adsb_samples` polylines when ingest has data in the stable completed query window; else static NYC corridors. **No OpenSky during `/scan` on the happy path.** **`static`:** corridors only (original “demo” dashed segments). **`live_adsb`:** capped OpenSky `states` + sequential `tracks` per scan (optional; can be slow). Legacy alias **`adsb`** is normalized to **`auto`**. See `backend/services/flights.py`. |
+| `FLIGHT_MODE` | **`auto`** (default): Supabase `adsb_samples` polylines when ingest has data in the stable completed query window; else **no paths**. **No OpenSky during `/scan` on the happy path.** **`static`:** corridors only (explicit demo dashed segments). **`live_adsb`:** capped OpenSky `states` + sequential `tracks` per scan (optional; can be slow); real tracks only. Legacy alias **`adsb`** is normalized to **`auto`**. See `backend/services/flights.py`. |
 | `ADSB_PATH_DAYS` | Optional. **1–14**, default **7**. How far back stored samples are queried for polylines. |
 | `ADSB_PATH_STABILITY_BUCKET_MINUTES` | Optional. **5–1440**, default **60**. Freezes stored path selection to completed time buckets so repeated scans of the same address do not rotate live aircraft every few seconds. |
 | `ADSB_PATH_STABILITY_LAG_MINUTES` | Optional. **0–1440**, default **0** in code; production currently uses **15**. Adds lag before the completed bucket cutoff so scans use fully-ingested data. |
@@ -703,9 +703,9 @@ Below is a concise log of problems faced while connecting GitHub, Railway, Verce
 
 | Mode | Behavior |
 |------|----------|
-| **`auto`** (**default**) | **1)** If Supabase `adsb_samples` has rows in the configured stable completed time/bbox window, build up to **3** per-aircraft **polylines** from stored samples (**no OpenSky call during `/scan`**). **2)** If that query yields nothing useful, fall back to the same **static NYC corridors** as `static`. Legacy env value **`adsb`** is accepted and treated as **`auto`**. |
-| **`static`** | Only hand-authored **NYC corridor segments** (JFK/LGA/EWR-style hints). Each `FlightPath` is **`start` + `end`** only (no `path`). **This matches the original marketing/demo map look:** dashed straight segments. |
-| **`live_adsb`** | **Per scan:** OpenSky **`states/all`** in a bbox, pick closest in-air traffic, then **sequential** **`tracks/all`** fetches with per-track timeouts and an overall **`OPENSKY_SCAN_BUDGET_SECONDS`** guard. Returns real polylines when available; otherwise falls back to **static** corridors. |
+| **`auto`** (**default**) | **1)** If Supabase `adsb_samples` has rows in the configured stable completed time/bbox window, build up to **3** per-aircraft **polylines** from stored samples (**no OpenSky call during `/scan`**). **2)** If that query yields nothing useful, return **no flight paths** (no synthetic corridors). Legacy env value **`adsb`** is accepted and treated as **`auto`**. |
+| **`static`** | Only hand-authored **NYC corridor segments** (JFK/LGA/EWR-style hints). Each `FlightPath` is **`start` + `end`** only (no `path`). **Explicit demo mode:** dashed straight segments. |
+| **`live_adsb`** | **Per scan:** OpenSky **`states/all`** in a bbox, pick closest in-air traffic, then **sequential** **`tracks/all`** fetches with per-track timeouts and an overall **`OPENSKY_SCAN_BUDGET_SECONDS`** guard. Returns real polylines when available; otherwise **no paths**. |
 
 **OpenSky auth:** credentials optional for prototyping; **`OPENSKY_USERNAME`** / **`OPENSKY_PASSWORD`** improve rate limits for both ingest and `live_adsb`.
 
@@ -866,16 +866,16 @@ python -m jobs.daily_refresh
 **Shipped in codebase and on production (verify on your Railway + Vercel dashboards):**
 
 - NYC-only scans (`/scan` guardrail) + NYC-locked map viewport
-- **`FLIGHT_MODE=auto` (default):** Supabase **`adsb_samples`** polylines when ingest has filled the window; else **static** corridors — **no OpenSky** on the default scan path when samples exist
-- **`FLIGHT_MODE=static`:** original marketing-style **dashed corridor** segments only
-- **`FLIGHT_MODE=live_adsb`:** optional **OpenSky** `tracks` polylines per scan (budgeted), with static fallback
+- **`FLIGHT_MODE=auto` (default):** Supabase **`adsb_samples`** polylines when ingest has filled the window; else **no paths** — **no OpenSky** on the default scan path when samples exist
+- **`FLIGHT_MODE=static`:** explicit marketing-style **dashed corridor** segments only
+- **`FLIGHT_MODE=live_adsb`:** optional **OpenSky** `tracks` polylines per scan (budgeted); real tracks only
 - **ADS-B ingest:** production stores real NYC aircraft position snapshots into Supabase every **10 seconds** (`ADSB_INGEST_INTERVAL_SECONDS=10`, `ADSB_INGEST_SOURCES=adsb_lol,opensky`)
 - **Stable flight paths:** production path selection uses completed **60-minute** buckets with **15-minute** lag, so repeated scans of the same address do not rotate through whatever aircraft is closest at that second
 - Backend **polyline cleanup** (discontinuity splitting, near-property pass selection, dedupe, spike filtering, implied-speed filter, Douglas–Peucker, light smooth) + frontend **display-only great-circle / Chaikin / centripetal Catmull–Rom shaping** (`frontend/lib/flightPathDisplay.ts`)
 - **Geocoding hardening:** `httpx`, **`trust_env=False`**, retries, longer timeouts (`MAPBOX_GEOCODE_*`)
 - **Flight Activity** UI (paths + exposure chips), **fail-open** `flight_exposure`, **Places-backed mall** card with static fallback
 - **Top dining within 2 miles (live):** `/scan` returns `dining[]` — top 4 ranked restaurants/bars (Yelp preferred, Google Places fallback); `TopDiningCarousel` on results page below logistics. Deployed with **`83cd8c6`** on `dwellsense.vercel.app` + Railway backend.
-- **Nearby municipal radius:** true Haversine radius is now **~1 mile**, with widened bbox prefilter + higher fetch caps to reduce premature truncation in dense areas
+- **Nearby municipal radius:** true Haversine radius is **2 miles** (`SCAN_RADIUS_MILES`, default **2**), with widened bbox prefilter + higher fetch caps to reduce premature truncation in dense areas
 - **311 sewer / water labels:** map zone and swarm pin labels now use NYC 311 descriptors to classify the issue while keeping visible names short, e.g. **Sewer Odor**, **Sewer Backup**, **Drain Blockage**, **Water Quality Issue**, **Water Leak**, or **Water Pressure**
 
 **Ongoing / decisions:**
@@ -897,7 +897,7 @@ python -m jobs.daily_refresh
 - **Map flight lines (`MapComponent.tsx` + `flightPathDisplay.ts`):** client-side display shaping now includes great-circle leg densification (`NEXT_PUBLIC_FLIGHT_PATH_GREAT_CIRCLE`, `NEXT_PUBLIC_FLIGHT_PATH_GC_*`), Chaikin corner rounding, and centripetal Catmull–Rom (`NEXT_PUBLIC_FLIGHT_PATH_SPLINE_*`); plane animation follows the **same** coordinates as the visible line; caption notes display smoothing; dash/solid rules unchanged in spirit.
 - **Places (`places.py`):** nearest **mall** from **Places `shopping_mall`** / text fallback; hardcoded NYC malls only if Places is empty.
 - **Dining (`places.py` + `TopDiningCarousel.tsx`):** top 4 restaurants/bars within **2 miles**; Yelp Fusion when `YELP_API_KEY` is set, else Google Places `restaurant` + `bar` nearby search; ranking uses real `rating` + `review_count` with a small distance tie-breaker; empty array when APIs unavailable (no fake data). **Shipped to production** (`83cd8c6`).
-- **City data (`city_data.py`):** nearby municipal rows use a true **~1 mile** Haversine filter after bbox prefilter; fetch caps were raised for the larger area; sewer / water 311 labels now use `descriptor` details for classification while keeping visible names to 2-3 words, including **Water Quality Issue** instead of ambiguous **Water Quality**.
+- **City data (`city_data.py`):** nearby municipal rows use a true **2 mile** Haversine filter after bbox prefilter; fetch caps were raised for the larger area; sewer / water 311 labels now use `descriptor` details for classification while keeping visible names to 2-3 words, including **Water Quality Issue** instead of ambiguous **Water Quality**.
 - **Flights (`flights.py`):** production path selection now uses completed stability buckets (`ADSB_PATH_STABILITY_BUCKET_MINUTES`, `ADSB_PATH_STABILITY_LAG_MINUTES`) and preserves at least the configured number of real ADS-B vertices, preventing paths from changing every search or collapsing to misleading 2-point lines.
 - **Ingest (`adsb_ingest.py`):** ingest stores real observed position snapshots from ordered providers (`ADSB_INGEST_SOURCES`); production currently uses **adsb.lol first, OpenSky fallback**, every **10 seconds**.
 - **Earlier (still true):** exposure fail-open; `SwarmPin` type expansion; Mapbox `line-dasharray` paint fix; Gemini bullets-only split; `adsb_samples` schema + `flight_exposure` on scan.

@@ -2,7 +2,7 @@
 Determines flight geometry for /scan map_data.
 
 - Default ``FLIGHT_MODE=auto`` builds polylines from Supabase ``adsb_samples`` (filled by
-  optional ingest) so user scans do not call OpenSky. Falls back to static NYC corridors.
+  optional ingest) so user scans do not call OpenSky. Returns no paths when samples are absent.
 - ``FLIGHT_MODE=live_adsb`` uses OpenSky with strict per-request timeouts (optional).
 """
 
@@ -1423,7 +1423,7 @@ async def get_flight_paths(
     Main entry point for scan pipeline.
 
     - ``auto`` (default): polylines from Supabase ``adsb_samples`` when ingest has data;
-      otherwise static NYC corridors. No OpenSky calls on this path.
+      otherwise returns no flight paths (no synthetic corridors).
     - ``static``: simplified hand-authored corridor segments only — same “demo” dashed
       straight segments (no per-aircraft tracks).
     - ``live_adsb``: capped OpenSky ``states`` + a few sequential ``tracks`` calls; falls
@@ -1451,8 +1451,8 @@ async def get_flight_paths(
         if paths:
             logger.info("flight paths: returning %d stored-sample track(s)", len(paths))
             return _filter_flight_paths_to_scan_radius(coord, paths)
-        logger.info("flight paths: no stored samples in window — static corridors")
-        return _filter_flight_paths_to_scan_radius(coord, static_paths())
+        logger.info("flight paths: no stored samples in window — returning none (auto mode)")
+        return []
 
     if mode == "live_adsb":
         try:
@@ -1466,7 +1466,7 @@ async def get_flight_paths(
                 timeout=budget,
             )
         except asyncio.TimeoutError:
-            logger.warning("live OpenSky flight path fetch exceeded %.0fs — static fallback", budget)
+            logger.warning("live OpenSky flight path fetch exceeded %.0fs — returning none", budget)
             paths = []
         except Exception:
             logger.exception("live OpenSky flight paths failed")
@@ -1474,16 +1474,17 @@ async def get_flight_paths(
         if paths:
             logger.info("live ADS-B: returning %d track(s)", len(paths))
             return _filter_flight_paths_to_scan_radius(coord, paths)
-        return _filter_flight_paths_to_scan_radius(coord, static_paths())
+        logger.info("live ADS-B: no tracks in budget — returning none")
+        return []
 
     logger.warning("unknown FLIGHT_MODE=%s — using auto", FLIGHT_MODE)
     try:
         paths = await asyncio.to_thread(get_stored_sample_flight_paths, coord, limit=limit)
     except Exception:
         paths = []
-    return _filter_flight_paths_to_scan_radius(
-        coord, paths if paths else static_paths()
-    )
+    if paths:
+        return _filter_flight_paths_to_scan_radius(coord, paths)
+    return []
 
 
 async def get_live_plane_position(
