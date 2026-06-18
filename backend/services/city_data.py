@@ -41,10 +41,10 @@ PERMIT_DAYS_BACK = 90
 EVICTION_DAYS_BACK = 180
 
 # Socrata/Supabase fetch caps (used to detect truncated samples).
-# 2mi radius is 4x the 1mi area; caps are raised to reduce premature truncation.
-CRIME_FETCH_LIMIT = 1200
-REPORTS_FETCH_LIMIT = 1800
-PERMITS_FETCH_LIMIT = 1200
+# 2mi disk in dense NYC can exceed a single bbox page — use grid fetches below.
+CRIME_FETCH_LIMIT = 3000
+REPORTS_FETCH_LIMIT = 6000
+PERMITS_FETCH_LIMIT = 2000
 EVICTIONS_FETCH_LIMIT = 600
 
 # NYC Open Data (Socrata) base URL
@@ -141,6 +141,106 @@ def _bbox(coord: Coordinate) -> dict:
     }
 
 
+def _grid_bboxes(coord: Coordinate, radius_miles: float, *, n: int = 4) -> list[dict]:
+    """Split the scan bbox into an N×N grid so fetches cover the whole disk, not one corner."""
+    lat_delta = radius_miles / 69.0
+    lng_delta = radius_miles / (69.0 * max(0.2, math.cos(math.radians(coord.lat))))
+    lat_min = coord.lat - lat_delta
+    lat_max = coord.lat + lat_delta
+    lng_min = coord.lng - lng_delta
+    lng_max = coord.lng + lng_delta
+    lat_step = (lat_max - lat_min) / n
+    lng_step = (lng_max - lng_min) / n
+    boxes: list[dict] = []
+    for i in range(n):
+        for j in range(n):
+            boxes.append({
+                "lat_min": lat_min + i * lat_step,
+                "lat_max": lat_min + (i + 1) * lat_step,
+                "lng_min": lng_min + j * lng_step,
+                "lng_max": lng_min + (j + 1) * lng_step,
+            })
+    return boxes
+
+
+def _row_dedupe_key(row: dict) -> tuple[str, float, float, str]:
+    return (
+        str(row.get("source_id") or ""),
+        round(float(row.get("lat", 0)), 5),
+        round(float(row.get("lng", 0)), 5),
+        str(
+            row.get("created_at")
+            or row.get("occurred_at")
+            or row.get("filing_date")
+            or ""
+        ),
+    )
+
+
+def _merge_rows(rows: list[dict]) -> list[dict]:
+    seen: set[tuple[str, float, float, str]] = set()
+    out: list[dict] = []
+    for row in rows:
+        try:
+            key = _row_dedupe_key(row)
+        except (TypeError, ValueError):
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(row)
+    return out
+
+
+def _supabase_grid_fetch(
+    client: Client,
+    table: str,
+    select: str,
+    coord: Coordinate,
+    *,
+    date_col: str,
+    since: str,
+    max_total: int,
+    grid_n: int = 4,
+) -> list[dict]:
+    """
+    Fetch municipal rows from Supabase across a grid inside the scan bbox.
+    A single .limit() on the full bbox can return thousands of rows from one corridor
+    and miss the rest of the 2-mile disk.
+    """
+    cells = _grid_bboxes(coord, get_scan_radius_miles(), n=grid_n)
+    per_cell = max(150, (max_total + len(cells) - 1) // len(cells))
+    merged: list[dict] = []
+    for bb in cells:
+        result = (
+            client.table(table)
+            .select(select)
+            .gte("lat", bb["lat_min"])
+            .lte("lat", bb["lat_max"])
+            .gte("lng", bb["lng_min"])
+            .lte("lng", bb["lng_max"])
+            .gte(date_col, since)
+            .limit(per_cell)
+            .execute()
+        )
+        merged.extend(result.data or [])
+    return _merge_rows(merged)[:max_total]
+
+
+def _socrata_within_circle_where(
+    coord: Coordinate,
+    radius_miles: float,
+    location_col: str,
+    date_col: str,
+    since: str,
+) -> str:
+    meters = radius_miles * 1609.344
+    return (
+        f"within_circle({location_col}, {coord.lat}, {coord.lng}, {meters}) "
+        f"AND {date_col} >= '{since}'"
+    )
+
+
 def _since_iso(days_back: int) -> str:
     """UTC ISO timestamp used for Supabase timestamptz comparisons."""
     return (datetime.now(timezone.utc) - timedelta(days=days_back)).isoformat()
@@ -193,7 +293,7 @@ def _socrata_fetch(endpoint: str, where: str, order: str = "", limit: int = 200)
             f"{SOCRATA_BASE}/{endpoint}",
             params=params,
             headers={"Accept": "application/json"},
-            timeout=20,
+            timeout=45,
         )
         resp.raise_for_status()
         return resp.json()
@@ -202,9 +302,59 @@ def _socrata_fetch(endpoint: str, where: str, order: str = "", limit: int = 200)
         return []
 
 
+def _socrata_fetch_paginated(
+    endpoint: str,
+    where: str,
+    *,
+    max_rows: int,
+    page_size: int = 2000,
+) -> list[dict]:
+    """Page through Socrata until max_rows or no more data."""
+    out: list[dict] = []
+    offset = 0
+    while len(out) < max_rows:
+        chunk = min(page_size, max_rows - len(out))
+        params = {"$where": where, "$limit": chunk, "$offset": offset}
+        try:
+            resp = requests.get(
+                f"{SOCRATA_BASE}/{endpoint}",
+                params=params,
+                headers={"Accept": "application/json"},
+                timeout=45,
+            )
+            resp.raise_for_status()
+            batch = resp.json()
+        except Exception as e:
+            logger.warning(f"Socrata paginated fetch failed for {endpoint}: {e}")
+            break
+        if not isinstance(batch, list) or not batch:
+            break
+        out.extend(batch)
+        if len(batch) < chunk:
+            break
+        offset += chunk
+    return out
+
+
 async def _socrata_fetch_async(endpoint: str, where: str, order: str = "", limit: int = 200) -> list[dict]:
     """Async wrapper — runs the blocking Socrata fetch in a thread pool."""
     return await asyncio.to_thread(_socrata_fetch, endpoint, where, order, limit)
+
+
+async def _socrata_fetch_paginated_async(
+    endpoint: str,
+    where: str,
+    *,
+    max_rows: int,
+    page_size: int = 2000,
+) -> list[dict]:
+    return await asyncio.to_thread(
+        _socrata_fetch_paginated,
+        endpoint,
+        where,
+        max_rows=max_rows,
+        page_size=page_size,
+    )
 
 
 # ─── Crime ────────────────────────────────────────────────────────────────────
@@ -214,39 +364,32 @@ async def get_nearby_crime(coord: Coordinate) -> list[dict]:
     global _supabase_reachable
     try:
         client = _get_client()
-        bb = _bbox(coord)
         since = _since_iso(CRIME_DAYS_BACK)
-        result = (
-            client.table("crime_reports")
-            .select("lat, lng, crime_type, description, occurred_at")
-            .gte("lat", bb["lat_min"])
-            .lte("lat", bb["lat_max"])
-            .gte("lng", bb["lng_min"])
-            .lte("lng", bb["lng_max"])
-            .gte("occurred_at", since)
-            .limit(CRIME_FETCH_LIMIT)
-            .execute()
+        rows = _supabase_grid_fetch(
+            client,
+            "crime_reports",
+            "lat, lng, crime_type, description, occurred_at, source_id",
+            coord,
+            date_col="occurred_at",
+            since=since,
+            max_total=CRIME_FETCH_LIMIT,
         )
         _supabase_reachable = True
-        rows = result.data or []
         if rows:
-            logger.info(f"Crime: {len(rows)} rows from Supabase.")
+            logger.info(f"Crime: {len(rows)} rows from Supabase (grid fetch).")
             return rows
     except Exception as e:
         if "nodename nor servname" in str(e) or "DNS" in str(e).upper():
             _supabase_reachable = False
         logger.warning(f"Supabase crime query failed: {e}")
 
-    # Live fallback — filter only by location, sorted by most recent
+    # Live fallback — true circle query on NYC Open Data (not bbox-only).
     logger.info("Crime: Supabase empty — fetching live from NYC Open Data.")
-    bb = _bbox(coord)
     since = _since_socrata(CRIME_DAYS_BACK)
-    where = (
-        f"latitude >= '{bb['lat_min']}' AND latitude <= '{bb['lat_max']}' "
-        f"AND longitude >= '{bb['lng_min']}' AND longitude <= '{bb['lng_max']}' "
-        f"AND cmplnt_fr_dt >= '{since}'"
+    where = _socrata_within_circle_where(
+        coord, get_scan_radius_miles(), "lat_lon", "cmplnt_fr_dt", since
     )
-    raw = await _socrata_fetch_async("5uac-w243.json", where, limit=CRIME_FETCH_LIMIT)
+    raw = await _socrata_fetch_paginated_async("5uac-w243.json", where, max_rows=CRIME_FETCH_LIMIT)
     result = []
     for r in raw:
         try:
@@ -273,37 +416,30 @@ async def get_nearby_311(coord: Coordinate) -> list[dict]:
     """311 service requests near the address."""
     try:
         client = _get_client()
-        bb = _bbox(coord)
         since = _since_iso(REPORTS_311_DAYS_BACK)
-        result = (
-            client.table("reports_311")
-            .select("lat, lng, complaint_type, descriptor, created_at")
-            .gte("lat", bb["lat_min"])
-            .lte("lat", bb["lat_max"])
-            .gte("lng", bb["lng_min"])
-            .lte("lng", bb["lng_max"])
-            .gte("created_at", since)
-            .limit(REPORTS_FETCH_LIMIT)
-            .execute()
+        rows = _supabase_grid_fetch(
+            client,
+            "reports_311",
+            "lat, lng, complaint_type, descriptor, created_at, source_id",
+            coord,
+            date_col="created_at",
+            since=since,
+            max_total=REPORTS_FETCH_LIMIT,
         )
-        rows = result.data or []
         if rows:
             filtered = _filter_311_rows(rows)
-            logger.info(f"311: {len(rows)} rows from Supabase ({len(filtered)} after parking/vehicle filter).")
+            logger.info(f"311: {len(rows)} rows from Supabase grid ({len(filtered)} after parking/vehicle filter).")
             return filtered
     except Exception as e:
         logger.warning(f"Supabase 311 query failed: {e}")
 
-    # Live fallback
+    # Live fallback — true circle on NYC Open Data.
     logger.info("311: Supabase empty — fetching live from NYC Open Data.")
-    bb = _bbox(coord)
     since = _since_socrata(REPORTS_311_DAYS_BACK)
-    where = (
-        f"latitude >= '{bb['lat_min']}' AND latitude <= '{bb['lat_max']}' "
-        f"AND longitude >= '{bb['lng_min']}' AND longitude <= '{bb['lng_max']}' "
-        f"AND created_date >= '{since}'"
+    where = _socrata_within_circle_where(
+        coord, get_scan_radius_miles(), "location", "created_date", since
     )
-    raw = await _socrata_fetch_async("erm2-nwe9.json", where, limit=REPORTS_FETCH_LIMIT)
+    raw = await _socrata_fetch_paginated_async("erm2-nwe9.json", where, max_rows=REPORTS_FETCH_LIMIT)
     result = []
     for r in raw:
         try:
@@ -327,27 +463,23 @@ async def get_nearby_permits(coord: Coordinate) -> list[dict]:
     """DOB building permits near the address (last 90 days)."""
     try:
         client = _get_client()
-        bb = _bbox(coord)
         since = _since_iso(PERMIT_DAYS_BACK)
-        result = (
-            client.table("building_permits")
-            .select("lat, lng, permit_type, permit_status, job_description, filing_date")
-            .gte("lat", bb["lat_min"])
-            .lte("lat", bb["lat_max"])
-            .gte("lng", bb["lng_min"])
-            .lte("lng", bb["lng_max"])
-            .gte("filing_date", since)
-            .limit(PERMITS_FETCH_LIMIT)
-            .execute()
+        rows = _supabase_grid_fetch(
+            client,
+            "building_permits",
+            "lat, lng, permit_type, permit_status, job_description, filing_date, source_id",
+            coord,
+            date_col="filing_date",
+            since=since,
+            max_total=PERMITS_FETCH_LIMIT,
         )
-        rows = result.data or []
         if rows:
-            logger.info(f"Permits: {len(rows)} rows from Supabase.")
+            logger.info(f"Permits: {len(rows)} rows from Supabase (grid fetch).")
             return rows
     except Exception as e:
         logger.warning(f"Supabase permits query failed: {e}")
 
-    # Live fallback — DOB permit issuances, filter by location
+    # Live fallback — bbox grid via paginated Socrata (permits lack a stable circle column).
     logger.info("Permits: Supabase empty — fetching live from NYC Open Data.")
     bb = _bbox(coord)
     since = _since_socrata(PERMIT_DAYS_BACK)
@@ -356,7 +488,7 @@ async def get_nearby_permits(coord: Coordinate) -> list[dict]:
         f"AND longitude >= '{bb['lng_min']}' AND longitude <= '{bb['lng_max']}' "
         f"AND filing_date >= '{since}'"
     )
-    raw = await _socrata_fetch_async("ipu4-2q9a.json", where, limit=PERMITS_FETCH_LIMIT)
+    raw = await _socrata_fetch_paginated_async("ipu4-2q9a.json", where, max_rows=PERMITS_FETCH_LIMIT)
     result = []
     for r in raw:
         try:
@@ -384,22 +516,18 @@ async def get_nearby_evictions(coord: Coordinate) -> list[dict]:
     """Housing court eviction records near the address."""
     try:
         client = _get_client()
-        bb = _bbox(coord)
         since = _since_iso(EVICTION_DAYS_BACK)
-        result = (
-            client.table("eviction_records")
-            .select("lat, lng, case_type, filing_date")
-            .gte("lat", bb["lat_min"])
-            .lte("lat", bb["lat_max"])
-            .gte("lng", bb["lng_min"])
-            .lte("lng", bb["lng_max"])
-            .gte("filing_date", since)
-            .limit(EVICTIONS_FETCH_LIMIT)
-            .execute()
+        rows = _supabase_grid_fetch(
+            client,
+            "eviction_records",
+            "lat, lng, case_type, filing_date, source_id",
+            coord,
+            date_col="filing_date",
+            since=since,
+            max_total=EVICTIONS_FETCH_LIMIT,
         )
-        rows = result.data or []
         if rows:
-            logger.info(f"Evictions: {len(rows)} rows from Supabase.")
+            logger.info(f"Evictions: {len(rows)} rows from Supabase (grid fetch).")
             return rows
     except Exception as e:
         logger.warning(f"Supabase evictions query failed: {e}")
