@@ -399,6 +399,54 @@ def _merge_bullets_with_fallback(
     return out
 
 
+def _enforce_fact_locked_bullets(
+    bullets_by_id: dict[str, list[str]],
+    *,
+    permit_count: int,
+    eviction_count: int,
+    scan_radius_miles: float,
+) -> dict[str, list[str]]:
+    """
+    Reliability guardrail: prevent cross-card factual contradictions.
+
+    Gemini writes prose; these bullets must never claim the opposite of what our
+    datasets show. We also keep certain cards on-topic (e.g. Tenant Churn must
+    not make statements about construction permits).
+    """
+    out = {k: _normalize_three(v) for k, v in (bullets_by_id or {}).items()}
+
+    # Tenant Churn (high_churn) is eviction/court-record driven only.
+    if eviction_count <= 0:
+        out["high_churn"] = [
+            f"No recent eviction filings found within ~{scan_radius_miles:g} miles.",
+            "Lower churn signals more stable tenancy in the immediate area.",
+            out.get("high_churn", ["", "", ""])[2] or _no_recent_reports_text(),
+        ]
+    else:
+        out["high_churn"] = [
+            f"{eviction_count} eviction filing(s) found within ~{scan_radius_miles:g} miles.",
+            "Higher churn can signal landlord issues or unstable tenancy.",
+            out.get("high_churn", ["", "", ""])[2] or "",
+        ]
+
+    # Demolitions (permits) must reflect active-permit count, not “none” when >0.
+    if permit_count <= 0:
+        out["demolitions"] = [
+            f"No active DOB permits found within ~{scan_radius_miles:g} miles.",
+            "Construction risk appears lower right now, but conditions can change quickly.",
+            out.get("demolitions", ["", "", ""])[2] or _no_recent_reports_text(),
+        ]
+    else:
+        out["demolitions"] = [
+            f"{permit_count} active DOB permit(s) found within ~{scan_radius_miles:g} miles.",
+            "Construction activity may mean noise, trucks, and sidewalk disruption.",
+            out.get("demolitions", ["", "", ""])[2] or "",
+        ]
+
+    # If Gemini leaked "permit"/"construction" into Tenant Churn, it's now overwritten above.
+    return out
+
+
 async def analyze(
     address: str,
     coord: Coordinate,
@@ -422,6 +470,7 @@ async def analyze(
     reports_count = len(reports_311)
     permit_count = _count_active_permits(permits)
     eviction_count = len(evictions)
+    scan_radius_miles = city_data.get_scan_radius_miles()
 
     raw_gemini_env = (os.getenv("GEMINI_API_KEY") or "").strip()
     gemini_api_key = _effective_gemini_key(raw_gemini_env)
@@ -481,6 +530,12 @@ async def analyze(
             permit_count=permit_count,
             eviction_count=eviction_count,
             flight_path=flight_path,
+        )
+        fb = _enforce_fact_locked_bullets(
+            fb,
+            permit_count=permit_count,
+            eviction_count=eviction_count,
+            scan_radius_miles=scan_radius_miles,
         )
         result = {
             **risk,
@@ -561,13 +616,19 @@ async def analyze(
             row = inner.get(cid)
             gemini_map[cid] = row if isinstance(row, list) else []
         merged = _merge_bullets_with_fallback(template_fb, gemini_map)
-        return _apply_no_recent_reports_bottom_line(
+        merged = _apply_no_recent_reports_bottom_line(
             merged,
             crime_count=crime_count,
             reports_count=reports_count,
             permit_count=permit_count,
             eviction_count=eviction_count,
             flight_path=flight_path,
+        )
+        return _enforce_fact_locked_bullets(
+            merged,
+            permit_count=permit_count,
+            eviction_count=eviction_count,
+            scan_radius_miles=scan_radius_miles,
         )
 
     for attempt in range(2):
