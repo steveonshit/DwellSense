@@ -72,6 +72,20 @@ function logisticsPinEmoji(card: LogisticsCard): string {
   return "🏪";
 }
 
+function zoneKindLabel(color: string): string {
+  switch (color) {
+    case "#ef4444":
+      return "NYPD crime report zone";
+    case "#a855f7":
+      return "311 rodent activity zone";
+    case "#f97316":
+      return "DOB permit zone";
+    case "#3b82f6":
+    default:
+      return "311 complaint zone";
+  }
+}
+
 interface Props {
   mapData: MapData;
   logistics: LogisticsCard[];
@@ -88,6 +102,8 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
   const trackRafRef = useRef<number>();
   const markersRef = useRef<mapboxgl.Marker[]>([]);
   const flightVertexMarkersRef = useRef<mapboxgl.Marker[]>([]);
+  const zonePopupRef = useRef<mapboxgl.Popup | null>(null);
+  const zoneHoveredIdRef = useRef<number | null>(null);
 
   // ── Build map on mount ──────────────────────────────────────────────────────
   useEffect(() => {
@@ -136,6 +152,9 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
 
     return () => {
       if (trackRafRef.current) cancelAnimationFrame(trackRafRef.current);
+      zonePopupRef.current?.remove();
+      zonePopupRef.current = null;
+      zoneHoveredIdRef.current = null;
       trackPlaneMarkersRef.current.forEach((m) => m.remove());
       trackPlaneMarkersRef.current = [];
       flightVertexMarkersRef.current.forEach((m) => m.remove());
@@ -291,34 +310,122 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
   };
 
   const addZones = (map: mapboxgl.Map) => {
-    mapData.zones.forEach((zone, i) => {
-      const id = `zone-${i}`;
-      map.addSource(id, {
-        type: "geojson",
-        data: {
-          type: "Feature",
-          properties: { label: zone.label },
-          geometry: { type: "Point", coordinates: [zone.lng, zone.lat] },
-        },
-      });
-      map.addLayer({
-        id: `${id}-fill`,
-        type: "circle",
-        source: id,
-        paint: {
-          "circle-radius": [
-            "interpolate", ["linear"], ["zoom"],
-            10, zone.radius_meters / 100,
-            15, zone.radius_meters / 10,
-          ],
-          "circle-color": zone.color,
-          "circle-opacity": 0.15,
-          "circle-stroke-color": zone.color,
-          "circle-stroke-width": 2,
-          "circle-stroke-opacity": 0.6,
-        },
-      });
+    if (!mapData.zones.length) return;
+
+    const sourceId = "threat-zones";
+    const layerId = "threat-zones-fill";
+
+    map.addSource(sourceId, {
+      type: "geojson",
+      data: {
+        type: "FeatureCollection",
+        features: mapData.zones.map((zone, i) => ({
+          type: "Feature" as const,
+          id: i,
+          properties: {
+            label: zone.label,
+            color: zone.color,
+            radius_meters: zone.radius_meters,
+            kind: zoneKindLabel(zone.color),
+          },
+          geometry: {
+            type: "Point" as const,
+            coordinates: [zone.lng, zone.lat],
+          },
+        })),
+      },
     });
+
+    map.addLayer({
+      id: layerId,
+      source: sourceId,
+      type: "circle",
+      paint: {
+        "circle-radius": [
+          "interpolate",
+          ["linear"],
+          ["zoom"],
+          10,
+          ["/", ["get", "radius_meters"], 100],
+          15,
+          ["/", ["get", "radius_meters"], 10],
+        ],
+        "circle-color": ["get", "color"],
+        "circle-opacity": [
+          "case",
+          ["boolean", ["feature-state", "hover"], false],
+          0.38,
+          0.15,
+        ],
+        "circle-stroke-color": ["get", "color"],
+        "circle-stroke-width": [
+          "case",
+          ["boolean", ["feature-state", "hover"], false],
+          3.5,
+          2,
+        ],
+        "circle-stroke-opacity": [
+          "case",
+          ["boolean", ["feature-state", "hover"], false],
+          1,
+          0.6,
+        ],
+      },
+    });
+
+    const popup =
+      zonePopupRef.current ??
+      new mapboxgl.Popup({
+        closeButton: false,
+        closeOnClick: false,
+        anchor: "bottom",
+        offset: 12,
+      });
+    zonePopupRef.current = popup;
+
+    const clearHover = () => {
+      if (zoneHoveredIdRef.current !== null) {
+        map.setFeatureState(
+          { source: sourceId, id: zoneHoveredIdRef.current },
+          { hover: false }
+        );
+        zoneHoveredIdRef.current = null;
+      }
+      map.getCanvas().style.cursor = "";
+      popup.remove();
+    };
+
+    map.on("mouseenter", layerId, (e) => {
+      const feature = e.features?.[0];
+      if (!feature) return;
+      const id = feature.id;
+      if (typeof id !== "number") return;
+
+      clearHover();
+      zoneHoveredIdRef.current = id;
+      map.setFeatureState({ source: sourceId, id }, { hover: true });
+      map.getCanvas().style.cursor = "pointer";
+
+      const label = String(feature.properties?.label ?? "Municipal activity");
+      const color = String(feature.properties?.color ?? "#3b82f6");
+      const kind = String(feature.properties?.kind ?? "Activity zone");
+      popup
+        .setLngLat(e.lngLat)
+        .setHTML(
+          `<div style="font-size:11px;font-weight:700;color:${color};margin-bottom:2px">${label}</div>` +
+            `<div style="font-size:10px;color:#94a3b8">${kind}</div>` +
+            `<div style="font-size:10px;color:#64748b;margin-top:2px">Reported in last 30–90 days</div>`
+        )
+        .addTo(map);
+    });
+
+    map.on("mousemove", layerId, (e) => {
+      if (popup.isOpen()) {
+        popup.setLngLat(e.lngLat);
+      }
+    });
+
+    map.on("mouseleave", layerId, clearHover);
   };
 
   const addSwarm = (map: mapboxgl.Map) => {
