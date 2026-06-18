@@ -141,7 +141,7 @@ def compute_exposure(
             icao = str(r.get("icao24") or "")
             minute_bucket = t.replace(second=0, microsecond=0)
             key = (icao, minute_bucket)
-            local_hour = t.astimezone(timezone.utc).hour  # keep UTC for prototype
+            local_hour = t.astimezone(timezone.utc).hour  # TODO: America/New_York for renter-facing night/day
             hours_seen.add(t.replace(minute=0, second=0, microsecond=0))
             if 3 <= local_hour <= 9:  # rough "night" proxy until we add NYC tz
                 night_keys.add(key)

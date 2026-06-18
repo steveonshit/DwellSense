@@ -206,7 +206,7 @@ Use this when explaining the system in a 3–5 minute presentation:
 
 18. **Frontend renders the result**
     - File: `frontend/components/ResultsDashboard.tsx`
-    - Components: `DangerBanner`, `LogisticsCarousel`, **`TopDiningCarousel`**, `MapComponent`, `ThreatCarousel`, `SideAds`.
+    - Components: `DangerBanner`, `LogisticsCarousel` (transit/grocery + top dining), `MapComponent`, `ThreatCarousel`, `SideAds`.
     - The frontend does not recompute the score. It displays the backend response.
 
 19. **Mapbox renders the interactive map**
@@ -383,7 +383,7 @@ Each `RestaurantBarCard` (`backend/models/schemas.py`):
 
 ### UI
 
-- Component: `frontend/components/TopDiningCarousel.tsx`
+- Merged into the proximity bar via `frontend/lib/proximityCards.ts` and `LogisticsCarousel.tsx` (top 4 dining cards from `/scan` `dining[]`).
 - Rendered in `ResultsDashboard.tsx` **below** `LogisticsCarousel`, **above** the map
 - Shows rank (#1–#4), name, category, rating, review count, distance, source label, and external link
 - Empty state: **“Restaurant/bar rankings unavailable from the configured place APIs.”** (no placeholder venues)
@@ -574,7 +574,7 @@ This table stores raw ADS‑B position samples — individual aircraft observati
 | Map + markers | `frontend/components/MapComponent.tsx` |
 | Flight line display shaping (great-circle arcs + smoothing, map-only) | `frontend/lib/flightPathDisplay.ts` |
 | Logistics carousel | `frontend/components/LogisticsCarousel.tsx` |
-| Top dining carousel (restaurants & bars) | `frontend/components/TopDiningCarousel.tsx` |
+| Top dining (merged into logistics bar) | `frontend/lib/proximityCards.ts`, `frontend/components/LogisticsCarousel.tsx` |
 
 ---
 
@@ -638,7 +638,7 @@ Some queries are intentionally capped (e.g. dense Manhattan can hit limits). Whe
 **Implemented:**
 
 - **Smaller Gemini ask:** Scoring and threat-card chrome live in Python; Gemini returns only **`bullets`** JSON — reduces latency vs the old full-card JSON.
-- **Top dining within 2 miles:** Yelp-first (optional key) + Google Places fallback; `TopDiningCarousel` on results page.
+- **Top dining within 2 miles:** Yelp-first (optional key) + Google Places fallback; merged into `LogisticsCarousel` via `proximityCards.ts`.
 
 ---
 
@@ -874,7 +874,7 @@ python -m jobs.daily_refresh
 - Backend **polyline cleanup** (discontinuity splitting, near-property pass selection, dedupe, spike filtering, implied-speed filter, Douglas–Peucker, light smooth) + frontend **display-only great-circle / Chaikin / centripetal Catmull–Rom shaping** (`frontend/lib/flightPathDisplay.ts`)
 - **Geocoding hardening:** `httpx`, **`trust_env=False`**, retries, longer timeouts (`MAPBOX_GEOCODE_*`)
 - **Flight Activity** UI (paths + exposure chips), **fail-open** `flight_exposure`, **Places-backed mall** card with static fallback
-- **Top dining within 2 miles (live):** `/scan` returns `dining[]` — top 4 ranked restaurants/bars (Yelp preferred, Google Places fallback); `TopDiningCarousel` on results page below logistics. Deployed with **`83cd8c6`** on `dwellsense.vercel.app` + Railway backend.
+- **Top dining within 2 miles (live):** `/scan` returns `dining[]` — top 4 ranked restaurants/bars merged into the logistics/proximity bar.
 - **Nearby municipal radius:** true Haversine radius is **2 miles** (`SCAN_RADIUS_MILES`, default **2**), with widened bbox prefilter + higher fetch caps to reduce premature truncation in dense areas
 - **311 sewer / water labels:** map zone and swarm pin labels now use NYC 311 descriptors to classify the issue while keeping visible names short, e.g. **Sewer Odor**, **Sewer Backup**, **Drain Blockage**, **Water Quality Issue**, **Water Leak**, or **Water Pressure**
 
@@ -896,7 +896,7 @@ python -m jobs.daily_refresh
 - **Flights (`flights.py`):** **`FLIGHT_MODE`** model is **`auto` | `static` | `live_adsb`** with **`adsb` → `auto`** alias; **`auto`** reads **`adsb_samples`** first; stored-path cleanup includes discontinuity splitting (`ADSB_PATH_MAX_GAP_MINUTES`, `ADSB_PATH_BLIND_JUMP_MILES`), near-pass slicing (`ADSB_PATH_KEEP_*`), dedupe, spike removal (`ADSB_PATH_SPIKE_*`), implied-speed filtering, Douglas–Peucker, smoothing, and final vertex capping; OpenSky **`live_adsb`** remains budgeted/sequential.
 - **Map flight lines (`MapComponent.tsx` + `flightPathDisplay.ts`):** client-side display shaping now includes great-circle leg densification (`NEXT_PUBLIC_FLIGHT_PATH_GREAT_CIRCLE`, `NEXT_PUBLIC_FLIGHT_PATH_GC_*`), Chaikin corner rounding, and centripetal Catmull–Rom (`NEXT_PUBLIC_FLIGHT_PATH_SPLINE_*`); plane animation follows the **same** coordinates as the visible line; caption notes display smoothing; dash/solid rules unchanged in spirit.
 - **Places (`places.py`):** nearest **mall** from **Places `shopping_mall`** / text fallback; hardcoded NYC malls only if Places is empty.
-- **Dining (`places.py` + `TopDiningCarousel.tsx`):** top 4 restaurants/bars within **2 miles**; Yelp Fusion when `YELP_API_KEY` is set, else Google Places `restaurant` + `bar` nearby search; ranking uses real `rating` + `review_count` with a small distance tie-breaker; empty array when APIs unavailable (no fake data). **Shipped to production** (`83cd8c6`).
+- **Dining (`places.py` + `proximityCards.ts`):** top 4 restaurants/bars within **2 miles**; Yelp Fusion when `YELP_API_KEY` is set, else Google Places `restaurant` + `bar` nearby search; ranking uses real `rating` + `review_count` with a small distance tie-breaker; empty array when APIs unavailable (no fake data).
 - **City data (`city_data.py`):** nearby municipal rows use a true **2 mile** Haversine filter after bbox prefilter; fetch caps were raised for the larger area; sewer / water 311 labels now use `descriptor` details for classification while keeping visible names to 2-3 words, including **Water Quality Issue** instead of ambiguous **Water Quality**.
 - **Flights (`flights.py`):** production path selection now uses completed stability buckets (`ADSB_PATH_STABILITY_BUCKET_MINUTES`, `ADSB_PATH_STABILITY_LAG_MINUTES`) and preserves at least the configured number of real ADS-B vertices, preventing paths from changing every search or collapsing to misleading 2-point lines.
 - **Ingest (`adsb_ingest.py`):** ingest stores real observed position snapshots from ordered providers (`ADSB_INGEST_SOURCES`); production currently uses **adsb.lol first, OpenSky fallback**, every **10 seconds**.

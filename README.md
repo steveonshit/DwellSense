@@ -8,7 +8,7 @@
 
 ```
 DwellSense/
-├── frontend/        Next.js 14 + Tailwind CSS + Mapbox GL JS
+├── frontend/        Next.js 15 + Tailwind CSS + Mapbox GL JS
 └── backend/         Python FastAPI + Gemini AI + Supabase
 ```
 
@@ -194,11 +194,11 @@ Open http://localhost:3000 in your browser. Type any NYC address and click **RUN
 1. User enters an NYC address → frontend sends to Next.js API route
 2. Next.js proxies to Python FastAPI backend (keeps API keys safe)
 3. Backend geocodes the address with Mapbox
-4. Backend queries Supabase for nearby crime, 311, and permit data (pre-loaded daily)
-5. Backend calls Google Maps for nearest transit/grocery (live, per request)
-6. Backend computes the nearest flight corridor (instant math)
-7. All data gets sent to Gemini AI, which writes the danger score + 9-point analysis
-8. Results sent back to frontend → displayed on the map + carousels
+4. Backend queries Supabase for nearby crime, 311, permits, and evictions (pre-loaded daily; 2-mile radius)
+5. Backend calls Google Places (and optional Yelp) for transit, grocery, and top dining nearby
+6. Backend loads real ADS-B flight tracks from Supabase when available (`FLIGHT_MODE=auto`)
+7. Python computes the Wellness Score and threat-card chrome; Gemini writes bullet text only
+8. Results sent back to frontend → map, carousels, and threat cards
 
 ---
 
