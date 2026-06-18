@@ -15,7 +15,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from models.schemas import Coordinate, FlightPath
-from services.city_data import _get_client
+from services.city_data import _get_client, get_scan_radius_miles
 
 OPENSKY_USERNAME = os.getenv("OPENSKY_USERNAME", "")
 OPENSKY_PASSWORD = os.getenv("OPENSKY_PASSWORD", "")
@@ -27,11 +27,14 @@ logger = logging.getLogger(__name__)
 
 
 def _flight_path_max_radius_miles() -> float:
-    """Closest-approach limit: flight paths farther than this from the scan address are hidden."""
-    try:
-        return max(1.0, min(25.0, float(os.getenv("FLIGHT_PATH_MAX_RADIUS_MILES", "5"))))
-    except ValueError:
-        return 5.0
+    """Closest-approach limit: paths outside this radius of the scan address are hidden."""
+    raw = (os.getenv("FLIGHT_PATH_MAX_RADIUS_MILES") or "").strip()
+    if raw:
+        try:
+            return max(0.25, min(25.0, float(raw)))
+        except ValueError:
+            pass
+    return get_scan_radius_miles()
 
 # Minimal airline mapping from common ICAO airline designators.
 ICAO_AIRLINE_NAMES = {
@@ -254,6 +257,113 @@ def _distance_point_to_segment_miles(point: Coordinate, start: Coordinate, end: 
         ) * EARTH_RADIUS_MILES
 
     return abs(δxt) * EARTH_RADIUS_MILES
+
+
+def _coord_within_radius(center: Coordinate, point: Coordinate, radius_miles: float) -> bool:
+    return _haversine_miles(center.lat, center.lng, point.lat, point.lng) <= radius_miles
+
+
+def _segment_boundary_point(
+    a: Coordinate,
+    b: Coordinate,
+    center: Coordinate,
+    radius_miles: float,
+    *,
+    a_inside: bool,
+) -> Coordinate:
+    """Binary-search along a→b for the point on the scan-radius circle."""
+    lo, hi = 0.0, 1.0
+    for _ in range(24):
+        mid = (lo + hi) * 0.5
+        p = Coordinate(
+            lat=a.lat + mid * (b.lat - a.lat),
+            lng=a.lng + mid * (b.lng - a.lng),
+        )
+        inside = _coord_within_radius(center, p, radius_miles)
+        if a_inside:
+            if inside:
+                lo = mid
+            else:
+                hi = mid
+        else:
+            if inside:
+                hi = mid
+            else:
+                lo = mid
+    t = lo if a_inside else hi
+    return Coordinate(
+        lat=a.lat + t * (b.lat - a.lat),
+        lng=a.lng + t * (b.lng - a.lng),
+    )
+
+
+def _clip_polyline_to_radius(
+    center: Coordinate,
+    coords: list[Coordinate],
+    radius_miles: float,
+) -> list[Coordinate]:
+    """Keep only the portion of a polyline that lies inside the scan-radius circle."""
+    if radius_miles <= 0 or not coords:
+        return []
+    if len(coords) == 1:
+        return coords if _coord_within_radius(center, coords[0], radius_miles) else []
+
+    out: list[Coordinate] = []
+    prev = coords[0]
+    prev_in = _coord_within_radius(center, prev, radius_miles)
+    if prev_in:
+        out.append(prev)
+
+    for cur in coords[1:]:
+        cur_in = _coord_within_radius(center, cur, radius_miles)
+        if prev_in and cur_in:
+            out.append(cur)
+        elif prev_in and not cur_in:
+            out.append(_segment_boundary_point(prev, cur, center, radius_miles, a_inside=True))
+        elif not prev_in and cur_in:
+            out.append(_segment_boundary_point(prev, cur, center, radius_miles, a_inside=False))
+            out.append(cur)
+        prev, prev_in = cur, cur_in
+
+    return out if len(out) >= 2 else []
+
+
+def _clip_flight_path_for_display(
+    path: FlightPath,
+    center: Coordinate,
+    radius_miles: float,
+) -> FlightPath | None:
+    """Clip geometry to the scan disk; drop paths that never enter it."""
+    base = list(path.path) if path.path and len(path.path) >= 2 else [path.start, path.end]
+    clipped = _clip_polyline_to_radius(center, base, radius_miles)
+    if len(clipped) < 2:
+        return None
+    dists = [_haversine_miles(center.lat, center.lng, c.lat, c.lng) for c in clipped]
+    closest = min(dists)
+    if closest > radius_miles:
+        return None
+    return path.model_copy(
+        update={
+            "start": clipped[0],
+            "end": clipped[-1],
+            "path": clipped,
+            "closest_miles": float(round(closest, 2)),
+            "sample_count": len(clipped),
+        }
+    )
+
+
+def _filter_flight_paths_to_scan_radius(
+    coord: Coordinate,
+    paths: list[FlightPath],
+) -> list[FlightPath]:
+    radius = _flight_path_max_radius_miles()
+    out: list[FlightPath] = []
+    for path in paths:
+        clipped = _clip_flight_path_for_display(path, coord, radius)
+        if clipped is not None:
+            out.append(clipped)
+    return out
 
 
 def get_nearest_flight_corridor(coord: Coordinate) -> FlightPath | None:
@@ -586,7 +696,8 @@ def get_stored_sample_flight_paths(
     (trim to one near-property pass),
     ``ADSB_PATH_DEDUPE_MIN_SEP_MI``, ``ADSB_PATH_MAX_IMPLIED_MPH``, ``ADSB_PATH_BLIND_JUMP_MILES``,
     ``ADSB_PATH_DP_EPSILON_MILES``, ``ADSB_PATH_SMOOTH_PASSES``, ``ADSB_PATH_SPIKE_*`` (drop local multilateration zig-zags).
-    Paths whose closest approach exceeds ``FLIGHT_PATH_MAX_RADIUS_MILES`` (default 5 mi) are omitted.
+    Paths whose closest approach exceeds ``FLIGHT_PATH_MAX_RADIUS_MILES`` (defaults to
+    ``SCAN_RADIUS_MILES``, typically 2 mi) are omitted; returned geometry is clipped to that disk.
     """
     max_radius = _flight_path_max_radius_miles()
     try:
@@ -1321,7 +1432,7 @@ async def get_flight_paths(
         )
 
     if mode == "static":
-        return static_paths()
+        return _filter_flight_paths_to_scan_radius(coord, static_paths())
 
     if mode == "auto":
         try:
@@ -1331,9 +1442,9 @@ async def get_flight_paths(
             paths = []
         if paths:
             logger.info("flight paths: returning %d stored-sample track(s)", len(paths))
-            return paths
+            return _filter_flight_paths_to_scan_radius(coord, paths)
         logger.info("flight paths: no stored samples in window — static corridors")
-        return static_paths()
+        return _filter_flight_paths_to_scan_radius(coord, static_paths())
 
     if mode == "live_adsb":
         try:
@@ -1354,15 +1465,17 @@ async def get_flight_paths(
             paths = []
         if paths:
             logger.info("live ADS-B: returning %d track(s)", len(paths))
-            return paths
-        return static_paths()
+            return _filter_flight_paths_to_scan_radius(coord, paths)
+        return _filter_flight_paths_to_scan_radius(coord, static_paths())
 
     logger.warning("unknown FLIGHT_MODE=%s — using auto", FLIGHT_MODE)
     try:
         paths = await asyncio.to_thread(get_stored_sample_flight_paths, coord, limit=limit)
     except Exception:
         paths = []
-    return paths if paths else static_paths()
+    return _filter_flight_paths_to_scan_radius(
+        coord, paths if paths else static_paths()
+    )
 
 
 async def get_live_plane_position(
