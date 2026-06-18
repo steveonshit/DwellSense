@@ -3,7 +3,7 @@
 import { useEffect, useRef, useCallback } from "react";
 import mapboxgl from "mapbox-gl";
 import { FlightExposure, MapData, LogisticsCard } from "@/lib/types";
-import { flightPathToLineLngLat, flightPathToRouteLatLng } from "@/lib/flightPathDisplay";
+import { flightPathToLineLngLat, flightPathToRouteLatLng, filterFlightPathsWithinRadius } from "@/lib/flightPathDisplay";
 
 mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || "";
 
@@ -270,9 +270,14 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
   // ── Helpers ─────────────────────────────────────────────────────────────────
 
   const getFlightPaths = () => {
-    const paths = mapData.flight_paths?.filter(Boolean) ?? [];
-    if (paths.length) return paths;
-    return mapData.flight_path ? [mapData.flight_path] : [];
+    const raw = mapData.flight_paths?.filter(Boolean) ?? [];
+    const paths = raw.length
+      ? raw
+      : mapData.flight_path
+        ? [mapData.flight_path]
+        : [];
+    const radiusMi = mapData.scan_radius_miles ?? 2;
+    return filterFlightPathsWithinRadius(paths, mapData.target, radiusMi);
   };
 
   const formatSeenAgo = (isoUtc: string) => {

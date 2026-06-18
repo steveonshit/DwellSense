@@ -98,6 +98,8 @@ export interface MapData {
   swarm: SwarmPin[];
   /** Total unique real geocodes in the scan radius (may exceed swarm.length). */
   swarm_location_total?: number | null;
+  /** Scan radius in miles (municipal data + flight path filter). */
+  scan_radius_miles?: number | null;
   flight_paths?: FlightPath[];
   /** Back-compat: some responses include a single path */
   flight_path?: FlightPath | null;

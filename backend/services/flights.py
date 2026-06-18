@@ -27,14 +27,23 @@ logger = logging.getLogger(__name__)
 
 
 def _flight_path_max_radius_miles() -> float:
-    """Closest-approach limit: paths outside this radius of the scan address are hidden."""
-    raw = (os.getenv("FLIGHT_PATH_MAX_RADIUS_MILES") or "").strip()
-    if raw:
-        try:
-            return max(0.25, min(25.0, float(raw)))
-        except ValueError:
-            pass
+    """Flight paths must enter the same disk as municipal scans (SCAN_RADIUS_MILES)."""
     return get_scan_radius_miles()
+
+
+def _path_closest_approach_miles(center: Coordinate, coords: list[Coordinate]) -> float:
+    """Minimum great-circle distance from center to any point on the polyline."""
+    if not coords:
+        return 999.0
+    if len(coords) == 1:
+        return _haversine_miles(center.lat, center.lng, coords[0].lat, coords[0].lng)
+    best = min(_haversine_miles(center.lat, center.lng, c.lat, c.lng) for c in coords)
+    for i in range(len(coords) - 1):
+        best = min(
+            best,
+            _distance_point_to_segment_miles(center, coords[i], coords[i + 1]),
+        )
+    return best
 
 # Minimal airline mapping from common ICAO airline designators.
 ICAO_AIRLINE_NAMES = {
@@ -335,12 +344,11 @@ def _clip_flight_path_for_display(
 ) -> FlightPath | None:
     """Clip geometry to the scan disk; drop paths that never enter it."""
     base = list(path.path) if path.path and len(path.path) >= 2 else [path.start, path.end]
+    closest = _path_closest_approach_miles(center, base)
+    if closest > radius_miles:
+        return None
     clipped = _clip_polyline_to_radius(center, base, radius_miles)
     if len(clipped) < 2:
-        return None
-    dists = [_haversine_miles(center.lat, center.lng, c.lat, c.lng) for c in clipped]
-    closest = min(dists)
-    if closest > radius_miles:
         return None
     return path.model_copy(
         update={

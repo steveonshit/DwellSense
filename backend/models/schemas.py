@@ -95,6 +95,8 @@ class MapData(BaseModel):
     swarm: list[SwarmPin]
     # Unique real geocodes in the 2-mile scan (may exceed len(swarm) when map caps pins for readability).
     swarm_location_total: int | None = None
+    # Municipal + flight overlay radius (miles) used for this scan.
+    scan_radius_miles: float | None = None
     # Multiple nearby corridors (nearest first). `flight_path` is kept for backwards compatibility.
     flight_paths: list[FlightPath] = []
     flight_path: FlightPath | None = None

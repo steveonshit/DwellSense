@@ -90,11 +90,13 @@ async def scan(request: ScanRequest):
     # ── 4. Build map data ────────────────────────────────────────────────────
     zones = city_data.build_zones(crime, reports_311, permits)
     swarm, swarm_total = city_data.build_swarm(crime, reports_311, permits, coord)
+    scan_radius_miles = city_data.get_scan_radius_miles()
     map_data = MapData(
         target=coord,
         zones=zones,
         swarm=swarm,
         swarm_location_total=swarm_total,
+        scan_radius_miles=scan_radius_miles,
         flight_paths=flight_paths,
         flight_path=flight_path,
     )

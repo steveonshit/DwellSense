@@ -1,4 +1,90 @@
-import type { FlightPath } from "./types";
+import type { Coordinate, FlightPath } from "./types";
+
+/** Great-circle distance in miles (matches backend haversine). */
+export function haversineMiles(
+  lat1: number,
+  lng1: number,
+  lat2: number,
+  lng2: number
+): number {
+  const R = 3958.8;
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
+}
+
+function centralAngleCoordRad(a: Coordinate, b: Coordinate): number {
+  const lat1 = (a.lat * Math.PI) / 180;
+  const lat2 = (b.lat * Math.PI) / 180;
+  const dLat = lat2 - lat1;
+  const dLng = ((b.lng - a.lng) * Math.PI) / 180;
+  const s =
+    Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+  return 2 * Math.asin(Math.min(1, Math.sqrt(Math.max(0, s))));
+}
+
+const EARTH_RADIUS_MI = 3958.8;
+
+/** Minimum distance from target to any point on the flight path polyline (miles). */
+export function flightPathClosestMiles(path: FlightPath, target: Coordinate): number {
+  const pts =
+    path.path && path.path.length >= 2 ? path.path : [path.start, path.end];
+  if (!pts.length) return Infinity;
+  if (pts.length === 1) {
+    return haversineMiles(target.lat, target.lng, pts[0]!.lat, pts[0]!.lng);
+  }
+  let best = Math.min(
+    ...pts.map((p) => haversineMiles(target.lat, target.lng, p.lat, p.lng))
+  );
+  for (let i = 0; i < pts.length - 1; i++) {
+    const start = pts[i]!;
+    const end = pts[i + 1]!;
+    const δ12 = centralAngleCoordRad(start, end);
+    if (δ12 < 1e-12) continue;
+    const δ13 = centralAngleCoordRad(start, target);
+    const θ12 = Math.atan2(
+      Math.sin((end.lng - start.lng) * (Math.PI / 180)) * Math.cos((end.lat * Math.PI) / 180),
+      Math.cos((start.lat * Math.PI) / 180) * Math.sin((end.lat * Math.PI) / 180) -
+        Math.sin((start.lat * Math.PI) / 180) * Math.cos((end.lat * Math.PI) / 180) *
+          Math.cos((end.lng - start.lng) * (Math.PI / 180))
+    );
+    const θ13 = Math.atan2(
+      Math.sin((target.lng - start.lng) * (Math.PI / 180)) * Math.cos((target.lat * Math.PI) / 180),
+      Math.cos((start.lat * Math.PI) / 180) * Math.sin((target.lat * Math.PI) / 180) -
+        Math.sin((start.lat * Math.PI) / 180) * Math.cos((target.lat * Math.PI) / 180) *
+          Math.cos((target.lng - start.lng) * (Math.PI / 180))
+    );
+    let δxt = Math.asin(Math.sin(δ13) * Math.sin(θ13 - θ12));
+    let δat = Math.acos(
+      Math.min(1, Math.max(-1, Math.cos(δ13) / Math.max(1e-12, Math.cos(δxt))))
+    );
+    if (δat > δ12) {
+      best = Math.min(
+        best,
+        haversineMiles(target.lat, target.lng, end.lat, end.lng),
+        haversineMiles(target.lat, target.lng, start.lat, start.lng)
+      );
+    } else {
+      δxt = Math.abs(δxt);
+      best = Math.min(best, (δxt * EARTH_RADIUS_MI));
+    }
+  }
+  return best;
+}
+
+/** Drop flight paths whose closest approach exceeds the scan radius. */
+export function filterFlightPathsWithinRadius(
+  paths: FlightPath[],
+  target: Coordinate,
+  radiusMiles: number
+): FlightPath[] {
+  if (!Number.isFinite(radiusMiles) || radiusMiles <= 0) return paths;
+  return paths.filter((p) => flightPathClosestMiles(p, target) <= radiusMiles + 1e-6);
+}
 
 /** Cap on densified vertices (Mapbox line paint stays fast). */
 const MAX_SPLINE_VERTICES = 360;
