@@ -46,6 +46,32 @@ const SWARM_COLOR: Record<string, string> = {
   report:       "#94a3b8",
 };
 
+const LOGISTICS_PIN_EMOJI: Record<string, string> = {
+  subway: "🚇",
+  train: "🚆",
+  bus: "🚌",
+  grocery: "🛒",
+  airport: "✈️",
+  mall: "🛍️",
+  targetstore: "🎯",
+  walmart: "🛒",
+  traderjoes: "🥑",
+};
+
+function logisticsPinEmoji(card: LogisticsCard): string {
+  if (card.type.startsWith("dining-")) {
+    return card.emoji?.trim() || "🍽️";
+  }
+  if (card.type === "grocery") {
+    return "🛒";
+  }
+  const byType = LOGISTICS_PIN_EMOJI[card.type];
+  if (byType) return byType;
+  const fromCard = card.emoji?.trim();
+  if (fromCard && fromCard !== "📍") return fromCard;
+  return "🏪";
+}
+
 interface Props {
   mapData: MapData;
   logistics: LogisticsCard[];
@@ -341,14 +367,8 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
   };
 
   const addLogisticsPins = (map: mapboxgl.Map) => {
-    const PIN_EMOJI: Record<string, string> = {
-      subway: "🚇", train: "🚆", bus: "🚌",
-      airport: "✈️", mall: "🛍️",
-      targetstore: "🎯", walmart: "🛒", traderjoes: "🥑",
-    };
-
     logistics.forEach((card) => {
-      const pinEmoji = card.type.startsWith("dining-") ? (card.emoji || "🍽️") : (PIN_EMOJI[card.type] || "📍");
+      const pinEmoji = logisticsPinEmoji(card);
       const outer = document.createElement("div");
       outer.style.cssText = `
         width: 36px; height: 36px; cursor: pointer; pointer-events: auto;
@@ -412,7 +432,6 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
       .setLngLat([mapData.target.lng, mapData.target.lat])
       .setPopup(popup)
       .addTo(map);
-    marker.getPopup()?.addTo(map);
     markersRef.current.push(marker);
   };
 
