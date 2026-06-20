@@ -64,7 +64,7 @@ DwellSense/
 
 ### Tech stack in plain English
 
-- **Next.js + React** is the website layer. It renders the landing page, address form, loading ad, score banner, logistics carousel, **top dining carousel**, threat cards, map, pins, and flight visuals.
+- **Next.js + React** is the website layer. It renders the landing page, address form, loading ad, score banner, logistics carousel (transit, grocery, **and top dining** in one bar), threat cards, map, pins, and flight visuals.
 - **Vercel** hosts the frontend and runs the small **Next.js API route** at `frontend/app/api/scan/route.ts`. That route is intentionally a server-side proxy so the browser does not need to know backend secrets or private URLs.
 - **Python + FastAPI** is the backend analysis engine. The main scan endpoint is `POST /scan` in `backend/routers/scan.py`.
 - **Railway** hosts the FastAPI backend. Railway owns the runtime for backend environment variables such as `MAPBOX_TOKEN`, `GOOGLE_MAPS_API_KEY`, `GEMINI_API_KEY`, `SUPABASE_URL`, and `SUPABASE_SERVICE_KEY`.
@@ -103,7 +103,7 @@ Use this when explaining the system in a 3–5 minute presentation:
 2. Browser calls **`POST /api/scan`** on the Next.js app (keeps `BACKEND_URL` server-side).
 3. Next.js proxies to **`POST {BACKEND_URL}/scan`** on Railway with a **~290s** upstream timeout; the route declares **`maxDuration = 300`** seconds.
 4. Backend runs geocoding, parallel DB + Places calls, flight math, deterministic scoring, then **Gemini** (bullets only — often the slowest step).
-5. JSON response drives the UI (map, logistics carousel, **top dining carousel**, threat cards).
+5. JSON response drives the UI (map, logistics/dining proximity bar, threat cards).
 
 ### Detailed address → result lifecycle
 
@@ -164,7 +164,8 @@ Use this when explaining the system in a 3–5 minute presentation:
 10. **Backend builds map data**
     - File: `backend/routers/scan.py`
     - `city_data.build_zones(...)` creates map heat zones.
-    - `city_data.build_swarm(...)` creates individual emoji-style map pins.
+    - `city_data.build_swarm(...)` creates individual emoji-style map pins from **real geocodes** (deterministic shuffle when capped; coordinates never modified).
+    - Map permit pins and permit zones use **active** DOB statuses only (`ISSUED`, `ACTIVE`, `RENEWED`); scoring still uses active permit counts separately.
     - 311 sewer / water map labels use the NYC `descriptor` field when available, but visible names stay short: **Sewer Odor**, **Sewer Backup**, **Drain Blockage**, **Water Quality Issue**, **Water Leak**, or **Water Pressure**.
     - `flights.get_flight_paths(...)` creates flight overlays.
     - Result is packed into `MapData`.
@@ -187,12 +188,15 @@ Use this when explaining the system in a 3–5 minute presentation:
 
 14. **Backend prepares threat-card chrome**
     - File: `backend/services/threat_card_layout.py`
-    - Python controls card IDs, emoji, titles, subtitles, colors, risk levels, and fallback structure.
+    - Python controls card IDs, emoji, titles, subtitles, **data-driven border colors**, risk levels, and fallback structure.
+    - **`CardChromeContext`** drives border/subtitle colors from actual counts (e.g. green churn when evictions = 0; purple 311 when volume ≥ 200).
     - This keeps the product UI stable even if Gemini is slow or unavailable.
 
 15. **Gemini writes bullet text only**
     - File: `backend/services/ai_analysis.py`
     - Gemini receives the same data brief and returns JSON shaped like `{ "bullets": { "card_id": ["...", "...", "..."] } }`.
+    - **`_finalize_threat_bullets`** / **`_enforce_fact_locked_bullets`** overwrite bullets so every card matches municipal/flight counts (no cross-card contamination).
+    - Third bullets use **card-specific** copy when a dataset is empty (not a generic “No recent reports!”).
     - Gemini does not decide the score, risk level, card order, card colors, or map data.
     - If Gemini is missing, slow, blocked, or returns bad JSON, Python merges in fallback bullets and the scan still returns.
 
@@ -212,9 +216,15 @@ Use this when explaining the system in a 3–5 minute presentation:
 19. **Mapbox renders the interactive map**
     - File: `frontend/components/MapComponent.tsx`
     - Displays the NYC-locked viewport, target marker, zones, swarm pins, logistics markers, flight routes, and flight activity chips.
+    - Map caption uses **`map_data.scan_radius_miles`** dynamically (e.g. “Showing 100 of N real NYC locations (2-mi)”).
+    - Frontend **`filterFlightPathsWithinRadius`** is a safety net aligned with backend scan radius.
     - The map is client-side and uses `NEXT_PUBLIC_MAPBOX_TOKEN`.
 
-20. **Flight lines are display-shaped on the client**
+20. **PDF dossier (optional download)**
+    - Files: `frontend/app/api/pdf/route.ts` → `backend/routers/pdf.py`
+    - Proxies the full `ScanResult` JSON; **`_pdf_text()`** normalizes Unicode/emojis for Helvetica (Latin-1 safe).
+
+21. **Flight lines are display-shaped on the client**
     - File: `frontend/lib/flightPathDisplay.ts`
     - This is visual-only shaping. It does not change backend truth data.
     - The display pipeline can densify long segments with great-circle interpolation, round corners, apply centripetal Catmull–Rom sampling, and keep plane animation on the same visible route coordinates.
@@ -383,9 +393,9 @@ Each `RestaurantBarCard` (`backend/models/schemas.py`):
 
 ### UI
 
-- Merged into the proximity bar via `frontend/lib/proximityCards.ts` and `LogisticsCarousel.tsx` (top 4 dining cards from `/scan` `dining[]`).
-- Rendered in `ResultsDashboard.tsx` **below** `LogisticsCarousel`, **above** the map
-- Shows rank (#1–#4), name, category, rating, review count, distance, source label, and external link
+- Merged into the proximity bar via `frontend/lib/proximityCards.ts` and `LogisticsCarousel.tsx` (top 4 dining cards appended to transit/grocery cards in one carousel).
+- Venue names use **two-line clamp** + **`title` tooltip** on hover for long names.
+- Shows rank (#1–#4), name, category, rating, review count, distance, source label, and external link.
 - Empty state: **“Restaurant/bar rankings unavailable from the configured place APIs.”** (no placeholder venues)
 
 ### Local / production setup
@@ -396,7 +406,7 @@ Each `RestaurantBarCard` (`backend/models/schemas.py`):
 
 **Commit:** `83cd8c6` — *Add top 4 ranked restaurants/bars within 2 miles*
 
-**Production status (verified):** pushed to `main`; auto-deployed to Railway + Vercel. As of deploy, `POST https://dwellsense-production.up.railway.app/scan` and `POST https://dwellsense.vercel.app/api/scan` both return `dining` with **4** items (Google Places fallback when `YELP_API_KEY` is unset). UI: hard-refresh the live site and run a **new** scan — carousel appears **below logistics**, above the map.
+**Production status (verified):** pushed to `main`; auto-deployed to Railway + Vercel. `POST /scan` returns `dining` with up to **4** items (Google Places fallback when `YELP_API_KEY` is unset). Dining cards appear **inside** the logistics proximity carousel (hard-refresh + new scan).
 
 **Quick production check:**
 
@@ -429,7 +439,9 @@ Expected: `4` and a real venue name (not an error).
 | `GEMINI_TIMEOUT_SECONDS` | Optional. Seconds for `asyncio.wait_for` around Gemini (default **300**). Set **`0`** to disable the asyncio timeout guard (still subject to upstream/Vercel/Railway limits). See `backend/.env.example`. |
 | `SUPABASE_URL` | Database URL |
 | `SUPABASE_SERVICE_KEY` | Service role key (not anon) |
-| `FRONTEND_URL` | CORS — set to your Vercel URL in production |
+| `FRONTEND_URL` | CORS — set to **`https://dwellsense.vercel.app`** in production (not `localhost`) |
+| `SCAN_RADIUS_MILES` | Optional. **0.25–10**, default **2**. True Haversine radius for municipal fetches, map caption, flight-path clip, and exposure default. |
+| `MAP_SWARM_MAX_PINS` | Optional. **20–200**, default **100**. Max map pins rendered; **`swarm_location_total`** still reports full unique geocodes in radius. |
 | `PORT` | Railway sets this automatically |
 | `OPENSKY_USERNAME` | Optional. OpenSky username (higher rate limits for ADS‑B). |
 | `OPENSKY_PASSWORD` | Optional. OpenSky password. |
@@ -437,14 +449,14 @@ Expected: `4` and a real venue name (not an error).
 | `ADSB_PATH_DAYS` | Optional. **1–14**, default **7**. How far back stored samples are queried for polylines. |
 | `ADSB_PATH_STABILITY_BUCKET_MINUTES` | Optional. **5–1440**, default **60**. Freezes stored path selection to completed time buckets so repeated scans of the same address do not rotate live aircraft every few seconds. |
 | `ADSB_PATH_STABILITY_LAG_MINUTES` | Optional. **0–1440**, default **0** in code; production currently uses **15**. Adds lag before the completed bucket cutoff so scans use fully-ingested data. |
-| `FLIGHT_PATH_MAX_RADIUS_MILES` | Optional. **1–25**, default **5**. Hide flight paths whose closest approach to the scanned address is farther than this. Also caps near-property track trimming. |
+| `FLIGHT_PATH_MAX_RADIUS_MILES` | **Deprecated / ignored.** Flight paths clip to **`SCAN_RADIUS_MILES`**. Remove from Railway if still set. |
 | `ADSB_PATH_BBOX_MILES` | Optional. **5–40**, default **~8** (max radius + 2). Bounding box half-extent around the property for the Supabase filter. |
 | `ADSB_PATH_MIN_POINTS` | Optional. **5–20**, default **5**. Minimum raw samples per ICAO to include a track; output paths also preserve at least this many real vertices after cleanup. |
 | `ADSB_PATH_MAX_POINTS` | Optional. **8–80**, default **40**. Even decimation cap per aircraft before cleanup. |
 | `ADSB_PATH_ROW_LIMIT` | Optional. **2000–25000**, default **15000**. Max rows returned from `adsb_samples` for one scan’s query. |
 | `ADSB_PATH_MAX_GAP_MINUTES` | Optional. **20–720**, default **120**. Splits a stored ADS-B series when consecutive samples are too far apart in time, preventing separate flights with the same ICAO from being stitched into one line. |
 | `ADSB_PATH_BLIND_JUMP_MILES` | Optional. **0–200**, default **0**. When timestamps are missing, split a stored path if consecutive points jump farther than this many miles. `0` disables this missing-timestamp split. |
-| `ADSB_PATH_KEEP_NEAR_MILES` | Optional. **1–25**, default **5** (capped by `FLIGHT_PATH_MAX_RADIUS_MILES`). Keeps one contiguous pass near the scan address instead of drawing a long unrelated track segment. |
+| `ADSB_PATH_KEEP_NEAR_MILES` | Optional. **1–25**, default **5** (capped by **`SCAN_RADIUS_MILES`**). Keeps one contiguous pass near the scan address instead of drawing a long unrelated track segment. |
 | `ADSB_PATH_KEEP_PAD_POINTS` | Optional. **0–30**, default **6**. Adds context points before/after the near-property pass so tracks do not look abruptly clipped. |
 | `ADSB_PATH_SPIKE_MIN_TURN_DEG` | Optional. **90–175**, default **148**. Sharp-turn threshold for dropping tiny local zig-zag spikes from noisy ADS-B samples. |
 | `ADSB_PATH_SPIKE_MAX_LEG_MI` | Optional. **0–1**, default **0.22**. Only drop sharp turns when both nearby legs are short enough to look like local jitter. `0` disables spike removal. |
@@ -584,10 +596,22 @@ This table stores raw ADS‑B position samples — individual aircraft observati
 
 | Piece | Where |
 |--------|--------|
-| Nine cards’ **ids, emoji, titles, subtitles, hex colors** | `threat_card_layout.py` (`CARD_SPECS`) |
+| Nine cards’ **ids, emoji, titles, subtitles** | `threat_card_layout.py` (`CARD_SPECS`) |
+| **Border + subtitle colors** (data-driven) | `threat_card_layout.resolve_card_colors` + `CardChromeContext` |
 | **Wellness Score** (`danger_score` field), **risk_level**, **risk_label**, **risk_description** | `threat_card_layout.compute_risk_from_counts` |
 | **27 bullets** (three per card) | Gemini returns JSON `{ "bullets": { "high_churn": ["","",""], ... } }` only (model configurable) |
+| **Fact-lock** (bullets must match counts) | `ai_analysis._enforce_fact_locked_bullets` after Gemini merge |
 | Merge + validation | `ai_analysis.py` merges Gemini bullets into the fixed chrome; **per-card** fallback to template bullets if fewer than two non-empty strings |
+
+**Card chrome highlights (current):**
+
+| Card id | Title (chrome) | Notes |
+|---------|----------------|-------|
+| `high_churn` | TENANT CHURN | Evictions only; green border when zero filings |
+| `tenant_warnings` | TENANT WARNINGS | Subtitle: HPD data **not ingested** — bullets never claim violations |
+| `demolitions` | CONSTRUCTION & DEMOLITIONS | DOB active permits + 311 construction counts |
+| `flight_path` | FLIGHT PATH | Subtitle: ADS-B tracks within scan radius (not heuristic corridors in `auto`) |
+| `reports_311` | 311 REPORTS | Stronger border when volume ≥ **200** |
 
 **Gemini call details:**
 
@@ -631,6 +655,10 @@ Some queries are intentionally capped (e.g. dense Manhattan can hit limits). Whe
 - adds a note to `risk_description` indicating counts may be capped
 - avoids claiming a perfect “100” (caps the wellness score’s upper bound in truncated cases)
 
+### High 311 volume adjustment
+
+When **`reports_count ≥ 200`** and **`crime_count < 8`**, a modest penalty is applied so dense 311 neighborhoods do not read as **STRONG SIGNALS** when NYPD crime is quiet. The banner adds an explicit caveat pointing users to the **311 REPORTS** card and map pins. Example: ~3,000 311 with zero crime lands around **MIXED SIGNALS (~47)** rather than **BELOW-AVERAGE (~37)**.
+
 ---
 
 ## Roadmap / Product Ideas
@@ -639,6 +667,10 @@ Some queries are intentionally capped (e.g. dense Manhattan can hit limits). Whe
 
 - **Smaller Gemini ask:** Scoring and threat-card chrome live in Python; Gemini returns only **`bullets`** JSON — reduces latency vs the old full-card JSON.
 - **Top dining within 2 miles:** Yelp-first (optional key) + Google Places fallback; merged into `LogisticsCarousel` via `proximityCards.ts`.
+- **Fact-locked threat cards:** All nine cards’ bullets enforced against real municipal/flight counts (`ai_analysis.py`).
+- **PDF dossier:** Unicode-safe generation via `_pdf_text()` in `backend/routers/pdf.py`.
+- **Public beta UI:** Navbar shows **Public beta**; side panels are honest **Sponsored / Ad space** placeholders (no fake stats).
+- **ESLint:** `frontend/.eslintrc.json` extends `next/core-web-vitals`.
 
 ---
 
@@ -711,9 +743,9 @@ Below is a concise log of problems faced while connecting GitHub, Railway, Verce
 
 ### Static corridors (what they are / what they aren’t)
 
-`static` (and the static half of `auto`) is **not** “FAA official tracks.” It is a small set of simplified segments used as a **directional hint** when there are no stored samples or when you force `FLIGHT_MODE=static`.
+`static` mode only ( **`FLIGHT_MODE=static`** ) uses hand-authored NYC corridor segments — **not** FAA official tracks. **`auto`** and **`live_adsb`** do **not** fall back to these when ADS-B data is missing; they return **no paths** instead (data-integrity rule).
 
-Nearest-corridor ranking uses **minimum great-circle distance** from the property to each segment (cross-track distance with endpoint fallbacks) in `backend/services/flights.py` (`get_nearby_flight_corridors` / `NYC_FLIGHT_CORRIDORS`).
+Nearest-corridor ranking (for `static` mode) uses **minimum great-circle distance** from the property to each segment in `backend/services/flights.py` (`get_nearby_flight_corridors` / `NYC_FLIGHT_CORRIDORS`).
 
 ### Stored-sample polylines (`auto` when ingest has data)
 
@@ -877,6 +909,11 @@ python -m jobs.daily_refresh
 - **Top dining within 2 miles (live):** `/scan` returns `dining[]` — top 4 ranked restaurants/bars merged into the logistics/proximity bar.
 - **Nearby municipal radius:** true Haversine radius is **2 miles** (`SCAN_RADIUS_MILES`, default **2**), with widened bbox prefilter + higher fetch caps to reduce premature truncation in dense areas
 - **311 sewer / water labels:** map zone and swarm pin labels now use NYC 311 descriptors to classify the issue while keeping visible names short, e.g. **Sewer Odor**, **Sewer Backup**, **Drain Blockage**, **Water Quality Issue**, **Water Leak**, or **Water Pressure**
+- **Fact-locked threat cards:** all nine cards’ bullets match municipal/flight counts; card-specific bottom lines; data-driven border colors
+- **PDF dossier:** Unicode-safe (`backend/routers/pdf.py`); download via **Download PDF Dossier** on results page
+- **No synthetic flight fallback in `auto`:** empty flight paths when no ADS-B samples (not static corridors)
+- **Production CORS:** `FRONTEND_URL=https://dwellsense.vercel.app` on Railway
+- **Public beta chrome:** navbar badge; honest side-ad placeholders; footer links to NYC Open Data
 
 **Ongoing / decisions:**
 
@@ -891,6 +928,19 @@ python -m jobs.daily_refresh
 
 ## Recent changelog (high-signal)
 
+### June 2026 — audit + UX polish (`fc4abc8` … `b9f28e2`)
+
+- **PDF (`pdf.py`):** `_pdf_text()` strips emojis / normalizes Unicode so Helvetica PDF generation does not 500 on real scan payloads.
+- **Flights (`flights.py`):** **`auto`** and **`live_adsb`** return **no paths** when ADS-B is absent — no static corridor fallback ( **`static`** mode unchanged for explicit demo ).
+- **Threat cards (`ai_analysis.py` + `threat_card_layout.py`):** fact-lock all nine cards; card-specific third bullets; **`CardChromeContext`** border colors; **CONSTRUCTION & DEMOLITIONS** rename; honest **Tenant Warnings** subtitle (HPD not ingested).
+- **Wellness score:** high-311 penalty when crime is low (≥200 complaints); banner caveat; example ~3k 311 → **MIXED SIGNALS ~47**.
+- **Map (`city_data.py` + `MapComponent.tsx`):** active permit pins/zones only; dynamic **`scan_radius_miles`** caption; natural pin shuffle (not grid).
+- **Flight exposure:** default radius follows **`SCAN_RADIUS_MILES`**.
+- **Frontend polish:** ESLint config; logistics name tooltips; footer dynamic year + NYC Open Data link; public beta navbar; placeholder side ads.
+- **Docs:** `project.md` and `README.md` synced to 2-mile radius and current flight/dining behavior.
+
+### Earlier (still true)
+
 - **Risk banner copy:** removed “block/neighborhood” wording from deterministic risk labels (`threat_card_layout.py`).
 - **Geocoding (`geocoding.py`):** switched from **`requests`** to **`httpx.AsyncClient`**; **`trust_env=False`**; configurable **`MAPBOX_GEOCODE_RETRIES`**, connect/read timeouts; retries on timeouts, connection errors, and HTTP **429 / 502 / 503 / 504**; clearer **`RuntimeError`** when Mapbox is unreachable after retries.
 - **Flights (`flights.py`):** **`FLIGHT_MODE`** model is **`auto` | `static` | `live_adsb`** with **`adsb` → `auto`** alias; **`auto`** reads **`adsb_samples`** first; stored-path cleanup includes discontinuity splitting (`ADSB_PATH_MAX_GAP_MINUTES`, `ADSB_PATH_BLIND_JUMP_MILES`), near-pass slicing (`ADSB_PATH_KEEP_*`), dedupe, spike removal (`ADSB_PATH_SPIKE_*`), implied-speed filtering, Douglas–Peucker, smoothing, and final vertex capping; OpenSky **`live_adsb`** remains budgeted/sequential.
@@ -900,8 +950,8 @@ python -m jobs.daily_refresh
 - **City data (`city_data.py`):** nearby municipal rows use a true **2 mile** Haversine filter after bbox prefilter; fetch caps were raised for the larger area; sewer / water 311 labels now use `descriptor` details for classification while keeping visible names to 2-3 words, including **Water Quality Issue** instead of ambiguous **Water Quality**.
 - **Flights (`flights.py`):** production path selection now uses completed stability buckets (`ADSB_PATH_STABILITY_BUCKET_MINUTES`, `ADSB_PATH_STABILITY_LAG_MINUTES`) and preserves at least the configured number of real ADS-B vertices, preventing paths from changing every search or collapsing to misleading 2-point lines.
 - **Ingest (`adsb_ingest.py`):** ingest stores real observed position snapshots from ordered providers (`ADSB_INGEST_SOURCES`); production currently uses **adsb.lol first, OpenSky fallback**, every **10 seconds**.
-- **Earlier (still true):** exposure fail-open; `SwarmPin` type expansion; Mapbox `line-dasharray` paint fix; Gemini bullets-only split; `adsb_samples` schema + `flight_exposure` on scan.
+- Exposure fail-open; `SwarmPin` type expansion; Mapbox `line-dasharray` paint fix; Gemini bullets-only split; `adsb_samples` schema + `flight_exposure` on scan.
 
 ---
 
-*Last updated: **Dining / Restaurants & Bars** section (APIs, ranking, schema, UI); **local vs production workflow**; production deploy verification for `83cd8c6` on Vercel + Railway; Vercel CLI token note.*
+*Last updated: **June 2026** — full-site audit fixes, fact-locked cards, PDF Unicode, flight no-fallback policy, wellness/311 scoring, threat-card UX polish, and production verification notes.*
