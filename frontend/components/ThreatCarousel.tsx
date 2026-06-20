@@ -1,64 +1,51 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useRef } from "react";
 import { ThreatCard } from "@/lib/types";
+import { useCarouselScroll } from "@/lib/carouselScroll";
+import CarouselDots from "./CarouselDots";
 
 interface Props {
   cards: ThreatCard[];
+  bulletsRefreshing?: boolean;
 }
 
-export default function ThreatCarousel({ cards }: Props) {
+export function scrollToThreatCard(cardId: string) {
+  const el = document.getElementById(`threat-card-${cardId}`);
+  el?.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
+}
+
+export default function ThreatCarousel({ cards, bulletsRefreshing = false }: Props) {
   const sliderRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const el = sliderRef.current;
-    if (!el) return;
-    let isDown = false;
-    let startX = 0;
-    let scrollLeft = 0;
-
-    const onDown = (e: MouseEvent) => {
-      isDown = true;
-      el.style.cursor = "grabbing";
-      startX = e.pageX - el.offsetLeft;
-      scrollLeft = el.scrollLeft;
-    };
-    const onUp = () => { isDown = false; el.style.cursor = "grab"; };
-    const onMove = (e: MouseEvent) => {
-      if (!isDown) return;
-      e.preventDefault();
-      el.scrollLeft = scrollLeft - (e.pageX - el.offsetLeft - startX) * 2;
-    };
-
-    el.addEventListener("mousedown", onDown);
-    el.addEventListener("mouseleave", onUp);
-    el.addEventListener("mouseup", onUp);
-    el.addEventListener("mousemove", onMove);
-    return () => {
-      el.removeEventListener("mousedown", onDown);
-      el.removeEventListener("mouseleave", onUp);
-      el.removeEventListener("mouseup", onUp);
-      el.removeEventListener("mousemove", onMove);
-    };
-  }, []);
+  const { activeIndex, scrollToIndex } = useCarouselScroll(sliderRef, ".stat-card");
 
   return (
     <div className="fade-in w-full" style={{ animationDelay: "0.3s" }}>
-      <div className="flex justify-between items-center mb-2 px-2">
-        <h3 className="text-white font-black uppercase tracking-widest text-sm md:text-base flex items-center gap-2">
+      <div className="flex justify-between items-center mb-2 px-2 gap-3">
+        <h3 className="text-white font-black uppercase tracking-widest text-sm md:text-base flex items-center gap-2 shrink-0">
           📑 9-Point Threat Analysis
         </h3>
-        <div className="flex items-center gap-2 text-rose-400 bg-rose-500/10 px-3 py-1.5 rounded-full border border-rose-500/20">
-          <span className="animate-pulse">←</span>
-          <span className="text-[10px] font-black tracking-widest uppercase mx-1">Drag / Swipe</span>
-          <span className="animate-pulse">→</span>
+        <div className="flex items-center gap-3 min-w-0">
+          {bulletsRefreshing ? (
+            <span className="text-[10px] font-black tracking-widest uppercase text-amber-300 whitespace-nowrap">
+              Refining AI summaries…
+            </span>
+          ) : (
+            <CarouselDots
+              count={cards.length}
+              activeIndex={activeIndex}
+              onSelect={scrollToIndex}
+              getAriaLabel={(i) => `Go to ${cards[i]?.title ?? "card"} (${i + 1} of ${cards.length})`}
+            />
+          )}
         </div>
       </div>
 
-      <div ref={sliderRef} className="horizontal-scroll-container" id="stats-slider">
+      <div ref={sliderRef} className="horizontal-scroll-container hide-scrollbar" id="stats-slider">
         {cards.map((card, i) => (
           <div
             key={card.id}
+            id={`threat-card-${card.id}`}
             className="stat-card bg-slate-800 p-6 md:p-8 rounded-3xl shadow-xl hover:bg-slate-700 transition-colors"
             style={{
               borderLeft: `10px solid ${card.border_color}`,

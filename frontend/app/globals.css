@@ -47,6 +47,17 @@ body {
 }
 .horizontal-scroll-container::-webkit-scrollbar-thumb:hover { background: #64748b; }
 
+/* Carousels with dot nav — hide the redundant horizontal scrollbar */
+.horizontal-scroll-container.hide-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  padding-bottom: 0.5rem;
+}
+.horizontal-scroll-container.hide-scrollbar::-webkit-scrollbar {
+  display: none;
+  height: 0;
+}
+
 .stat-card {
   min-width: 85vw;
   scroll-snap-align: start;
@@ -68,7 +79,7 @@ body {
 
 @media (min-width: 768px) {
   .stat-card { min-width: 380px; }
-  .logistics-card { min-width: 300px; }
+  .logistics-card { min-width: 320px; }
 }
 
 /* ── Hover Cards ────────────────────────────────────────────────────────────── */

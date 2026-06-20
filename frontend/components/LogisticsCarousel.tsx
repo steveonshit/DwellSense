@@ -1,8 +1,10 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useRef } from "react";
 import { LogisticsCard } from "@/lib/types";
 import { isDiningCard } from "@/lib/proximityCards";
+import { useCarouselScroll } from "@/lib/carouselScroll";
+import CarouselDots from "./CarouselDots";
 
 interface Props {
   cards: LogisticsCard[];
@@ -11,59 +13,29 @@ interface Props {
 
 export default function LogisticsCarousel({ cards, onHoverCard }: Props) {
   const sliderRef = useRef<HTMLDivElement>(null);
-
-  // Drag-to-scroll
-  useEffect(() => {
-    const el = sliderRef.current;
-    if (!el) return;
-    let isDown = false;
-    let startX = 0;
-    let scrollLeft = 0;
-
-    const onDown = (e: MouseEvent) => {
-      isDown = true;
-      el.style.cursor = "grabbing";
-      startX = e.pageX - el.offsetLeft;
-      scrollLeft = el.scrollLeft;
-    };
-    const onUp = () => { isDown = false; el.style.cursor = "grab"; };
-    const onMove = (e: MouseEvent) => {
-      if (!isDown) return;
-      e.preventDefault();
-      const x = e.pageX - el.offsetLeft;
-      el.scrollLeft = scrollLeft - (x - startX) * 2;
-    };
-
-    el.addEventListener("mousedown", onDown);
-    el.addEventListener("mouseleave", onUp);
-    el.addEventListener("mouseup", onUp);
-    el.addEventListener("mousemove", onMove);
-    return () => {
-      el.removeEventListener("mousedown", onDown);
-      el.removeEventListener("mouseleave", onUp);
-      el.removeEventListener("mouseup", onUp);
-      el.removeEventListener("mousemove", onMove);
-    };
-  }, []);
+  const { activeIndex, scrollToIndex } = useCarouselScroll(sliderRef, ".logistics-card");
 
   return (
     <div className="fade-in w-full" style={{ animationDelay: "0.1s" }}>
-      <div className="flex justify-between items-center mb-1 px-2">
-        <h3 className="text-white font-black uppercase tracking-widest text-sm md:text-base flex items-center gap-2">
+      <div className="flex justify-between items-center mb-1 px-2 gap-3">
+        <h3 className="text-white font-black uppercase tracking-widest text-sm md:text-base flex items-center gap-2 shrink-0">
           📍 Transit, Grocery &amp; Dining Proximity
         </h3>
-        <div className="flex items-center gap-2 text-rose-400 bg-rose-500/10 px-3 py-1.5 rounded-full border border-rose-500/20">
-          <span className="animate-pulse">←</span>
-          <span className="text-[10px] font-black tracking-widest uppercase mx-1">Drag / Swipe</span>
-          <span className="animate-pulse">→</span>
+        <div className="flex items-center min-w-0">
+          <CarouselDots
+            count={cards.length}
+            activeIndex={activeIndex}
+            onSelect={scrollToIndex}
+            getAriaLabel={(i) => `Go to ${cards[i]?.name ?? "card"} (${i + 1} of ${cards.length})`}
+          />
         </div>
       </div>
 
-      <div ref={sliderRef} className="horizontal-scroll-container">
+      <div ref={sliderRef} className="horizontal-scroll-container hide-scrollbar">
         {cards.map((card, i) => (
           <div
             key={card.type + i}
-            className="logistics-card bg-[#1e293b] border border-slate-700/50 p-2 md:p-2.5 rounded-2xl shadow-lg hover-card hover:bg-slate-700 group transition-colors"
+            className="logistics-card bg-[#1e293b] border border-slate-700/50 p-2.5 md:p-3 rounded-2xl shadow-lg hover-card hover:bg-slate-700 group transition-colors"
             style={{ borderColor: "transparent" }}
             onMouseEnter={(e) => {
               (e.currentTarget as HTMLElement).style.borderColor = card.color;
@@ -100,25 +72,25 @@ export default function LogisticsCarousel({ cards, onHoverCard }: Props) {
               </div>
             </div>
 
-            <div className="text-right flex flex-col justify-center items-end pl-2 ml-1 border-l border-slate-700/50 shrink-0 h-full">
+            <div className="text-right flex flex-col justify-center items-end pl-2 ml-1 border-l border-slate-700/50 shrink-0 min-w-[4.75rem] h-full">
               {isDiningCard(card.type) && card.rating != null ? (
                 <>
-                  <div className="text-white text-base lg:text-lg font-black leading-none tracking-tight mb-1">
+                  <div className="text-white text-base lg:text-lg font-black leading-none tracking-tight mb-1 whitespace-nowrap">
                     {card.rating.toFixed(1)}
                   </div>
-                  <div className="text-amber-300 text-[8px] md:text-[9px] font-bold uppercase tracking-widest leading-none mb-1">
+                  <div className="text-amber-300 text-[8px] md:text-[9px] font-bold uppercase tracking-widest leading-none mb-1 whitespace-nowrap">
                     {card.review_count != null ? `${card.review_count} reviews` : "Rated"}
                   </div>
-                  <div className="text-slate-400 text-[8px] md:text-[9px] font-bold uppercase tracking-widest leading-none capitalize">
+                  <div className="text-slate-400 text-[8px] md:text-[9px] font-bold uppercase tracking-widest leading-none capitalize whitespace-nowrap">
                     {card.distance_value} {card.distance_unit}
                   </div>
                 </>
               ) : (
                 <>
-                  <div className="text-white text-base lg:text-lg font-black leading-none tracking-tight mb-1">
+                  <div className="text-white text-base lg:text-lg font-black leading-none tracking-tight mb-1 whitespace-nowrap">
                     {card.distance_value}
                   </div>
-                  <div className="text-slate-400 text-[8px] md:text-[9px] font-bold uppercase tracking-widest leading-none capitalize">
+                  <div className="text-slate-400 text-[8px] md:text-[9px] font-bold uppercase tracking-widest leading-none capitalize whitespace-nowrap">
                     {card.distance_unit}
                   </div>
                 </>

@@ -6,8 +6,8 @@ import { ScanResult } from "@/lib/types";
 import { buildProximityCards } from "@/lib/proximityCards";
 import DangerBanner from "./DangerBanner";
 import LogisticsCarousel from "./LogisticsCarousel";
-import ThreatCarousel from "./ThreatCarousel";
-import SideAds from "./SideAds";
+import ThreatCarousel, { scrollToThreatCard } from "./ThreatCarousel";
+import SideAds, { ScanSummaryProps } from "./SideAds";
 
 // Mapbox must only render on the client side (no SSR)
 const MapComponent = dynamic(() => import("./MapComponent"), { ssr: false });
@@ -15,9 +15,10 @@ const MapComponent = dynamic(() => import("./MapComponent"), { ssr: false });
 interface Props {
   result: ScanResult;
   onReset: () => void;
+  bulletsRefreshing?: boolean;
 }
 
-export default function ResultsDashboard({ result, onReset }: Props) {
+export default function ResultsDashboard({ result, onReset, bulletsRefreshing = false }: Props) {
   const [activeRoute, setActiveRoute] = useState<string | null>(null);
   const [pdfLoading, setPdfLoading] = useState(false);
 
@@ -25,6 +26,27 @@ export default function ResultsDashboard({ result, onReset }: Props) {
     () => buildProximityCards(result.logistics, result.dining),
     [result.logistics, result.dining],
   );
+
+  const sideSummary = useMemo((): ScanSummaryProps => {
+    const paths = result.map_data.flight_paths?.length
+      ? result.map_data.flight_paths
+      : result.map_data.flight_path
+        ? [result.map_data.flight_path]
+        : [];
+    return {
+      score: result.danger_score,
+      riskLabel: result.risk_label,
+      address: result.formatted_address,
+      swarmShown: result.map_data.swarm.length,
+      swarmTotal: result.map_data.swarm_location_total ?? null,
+      scanRadiusMi: result.map_data.scan_radius_miles ?? 2,
+      flightPathCount: paths.length,
+    };
+  }, [result]);
+
+  const handleSee311Breakdown = useCallback(() => {
+    scrollToThreatCard("reports_311");
+  }, []);
 
   const handleHoverCard = useCallback((type: string | null) => {
     setActiveRoute(type);
@@ -55,10 +77,10 @@ export default function ResultsDashboard({ result, onReset }: Props) {
 
   return (
     <>
-      <SideAds />
+      <SideAds summary={sideSummary} />
       <div className="w-full space-y-5 pb-12 overflow-hidden relative z-20">
 
-        <DangerBanner result={result} />
+        <DangerBanner result={result} onSee311Breakdown={handleSee311Breakdown} />
 
         <LogisticsCarousel
           cards={proximityCards}
@@ -73,7 +95,7 @@ export default function ResultsDashboard({ result, onReset }: Props) {
           flightExposure={result.flight_exposure}
         />
 
-        <ThreatCarousel cards={result.threat_cards} />
+        <ThreatCarousel cards={result.threat_cards} bulletsRefreshing={bulletsRefreshing} />
 
         {/* Action buttons */}
         <div className="flex flex-col sm:flex-row gap-4 mt-4 fade-in" style={{ animationDelay: "0.4s" }}>

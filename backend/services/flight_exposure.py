@@ -4,6 +4,12 @@ import logging
 import math
 import os
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+
+_NYC_TZ = ZoneInfo("America/New_York")
+# Renter-facing "night" window for aircraft noise (local NYC time).
+_NIGHT_HOUR_START = 22  # 10 PM
+_NIGHT_HOUR_END = 7  # before 7 AM
 
 from models.schemas import Coordinate, FlightExposure
 from services.city_data import _get_client, get_scan_radius_miles
@@ -141,9 +147,9 @@ def compute_exposure(
             icao = str(r.get("icao24") or "")
             minute_bucket = t.replace(second=0, microsecond=0)
             key = (icao, minute_bucket)
-            local_hour = t.astimezone(timezone.utc).hour  # TODO: America/New_York for renter-facing night/day
+            local_hour = t.astimezone(_NYC_TZ).hour
             hours_seen.add(t.replace(minute=0, second=0, microsecond=0))
-            if 3 <= local_hour <= 9:  # rough "night" proxy until we add NYC tz
+            if local_hour >= _NIGHT_HOUR_START or local_hour < _NIGHT_HOUR_END:
                 night_keys.add(key)
             else:
                 day_keys.add(key)

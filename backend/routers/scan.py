@@ -6,7 +6,7 @@ Takes an address, runs all data lookups in parallel, and returns the full ScanRe
 import asyncio
 import logging
 from fastapi import APIRouter, HTTPException
-from models.schemas import ScanRequest, ScanResponse, MapData, ThreatCard
+from models.schemas import ScanRequest, ScanResponse, MapData, ThreatCard, BulletsRequest, BulletsResponse
 from services import geocoding, city_data, places, flights, ai_analysis, flight_exposure
 from services.threat_card_layout import cards_from_specs_and_bullets, ordered_card_ids
 from services.city_data import (
@@ -32,6 +32,34 @@ def _is_within_nyc(coord) -> bool:
         NYC_BOUNDS["lat_min"] <= coord.lat <= NYC_BOUNDS["lat_max"]
         and NYC_BOUNDS["lng_min"] <= coord.lng <= NYC_BOUNDS["lng_max"]
     )
+
+
+def _threat_cards_from_ai(ai_result: dict) -> list[ThreatCard]:
+    threat_cards: list[ThreatCard] = []
+    for card in ai_result.get("threat_cards") or []:
+        if not isinstance(card, dict):
+            continue
+        try:
+            bullets = card.get("bullets")
+            if not isinstance(bullets, list):
+                bullets = []
+            threat_cards.append(
+                ThreatCard(
+                    id=str(card.get("id", "")),
+                    emoji=str(card.get("emoji", "")),
+                    title=str(card.get("title", "")),
+                    subtitle=str(card.get("subtitle", "")),
+                    border_color=str(card.get("border_color", "")),
+                    text_color=str(card.get("text_color", "")),
+                    bullets=[str(b) for b in bullets],
+                )
+            )
+        except Exception:
+            logger.warning("Skipping malformed threat card", exc_info=True)
+    if not threat_cards:
+        fb_map = {cid: ["Details unavailable.", "—", "—"] for cid in ordered_card_ids()}
+        threat_cards = [ThreatCard(**c) for c in cards_from_specs_and_bullets(fb_map)]
+    return threat_cards
 
 
 @router.post("/scan", response_model=ScanResponse)
@@ -115,33 +143,11 @@ async def scan(request: ScanRequest):
         reports_capped=reports_capped,
         permits_capped=permits_capped,
         evictions_capped=evictions_capped,
+        defer_gemini=request.defer_gemini,
     )
 
     # ── 6. Parse AI result into typed models ──────────────────────────────────
-    threat_cards: list[ThreatCard] = []
-    for card in ai_result.get("threat_cards") or []:
-        if not isinstance(card, dict):
-            continue
-        try:
-            bullets = card.get("bullets")
-            if not isinstance(bullets, list):
-                bullets = []
-            threat_cards.append(
-                ThreatCard(
-                    id=str(card.get("id", "")),
-                    emoji=str(card.get("emoji", "")),
-                    title=str(card.get("title", "")),
-                    subtitle=str(card.get("subtitle", "")),
-                    border_color=str(card.get("border_color", "")),
-                    text_color=str(card.get("text_color", "")),
-                    bullets=[str(b) for b in bullets],
-                )
-            )
-        except Exception:
-            logger.warning("Skipping malformed threat card", exc_info=True)
-    if not threat_cards:
-        fb_map = {cid: ["Details unavailable.", "—", "—"] for cid in ordered_card_ids()}
-        threat_cards = [ThreatCard(**c) for c in cards_from_specs_and_bullets(fb_map)]
+    threat_cards = _threat_cards_from_ai(ai_result)
 
     _ds = ai_result.get("danger_score", 50)
     try:
@@ -163,6 +169,13 @@ async def scan(request: ScanRequest):
         "MODERATE": "🟡",
         "LOW": "✅",
     }
+    label_text = str(ai_result.get("risk_label", risk_level + " RISK"))
+    if label_text == "Outstanding":
+        emoji = "🌟"
+    elif label_text == "Excellent":
+        emoji = "✨"
+    else:
+        emoji = risk_emoji_map.get(risk_level, "⚠️")
 
     return ScanResponse(
         address=address,
@@ -170,13 +183,38 @@ async def scan(request: ScanRequest):
         coordinates=coord,
         danger_score=danger_score,
         risk_level=risk_level,
-        risk_label=f"{risk_emoji_map.get(risk_level, '⚠️')} {ai_result.get('risk_label', risk_level + ' RISK')}",
+        risk_label=f"{emoji} {label_text}",
         risk_description=ai_result.get("risk_description", ""),
         logistics=logistics,
         dining=dining,
         threat_cards=threat_cards,
         map_data=map_data,
         flight_exposure=flight_exposure.compute_exposure(coord),
+        gemini_configured=bool(ai_result.get("gemini_configured", False)),
+        gemini_status=ai_result.get("gemini_status"),
+        gemini_latency_ms=ai_result.get("gemini_latency_ms"),
+        gemini_timeout_seconds=ai_result.get("gemini_timeout_seconds"),
+        gemini_error_kind=ai_result.get("gemini_error_kind"),
+        gemini_error_detail=ai_result.get("gemini_error_detail"),
+        bullets_token=ai_result.get("bullets_token"),
+    )
+
+
+@router.post("/scan/bullets", response_model=BulletsResponse)
+async def scan_bullets(request: BulletsRequest):
+    token = request.bullets_token.strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="bullets_token is required.")
+
+    ai_result = await ai_analysis.complete_deferred_bullets(token)
+    if not ai_result:
+        raise HTTPException(
+            status_code=404,
+            detail="Bullets token expired or invalid. Re-run the scan to refresh summaries.",
+        )
+
+    return BulletsResponse(
+        threat_cards=_threat_cards_from_ai(ai_result),
         gemini_configured=bool(ai_result.get("gemini_configured", False)),
         gemini_status=ai_result.get("gemini_status"),
         gemini_latency_ms=ai_result.get("gemini_latency_ms"),

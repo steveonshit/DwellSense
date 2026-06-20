@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import Link from "next/link";
 import Navbar from "@/components/Navbar";
 import HeroSection from "@/components/HeroSection";
@@ -15,6 +15,7 @@ export default function Home() {
   const [result, setResult] = useState<ScanResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isApiReady, setIsApiReady] = useState(false);
+  const [bulletsRefreshing, setBulletsRefreshing] = useState(false);
 
   // Holds the scan result while the ad is still playing
   const pendingResult = useRef<ScanResult | null>(null);
@@ -29,7 +30,7 @@ export default function Home() {
       const res = await fetch("/api/scan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ address }),
+        body: JSON.stringify({ address, defer_gemini: true }),
         signal: AbortSignal.timeout(295_000),
       });
 
@@ -59,10 +60,56 @@ export default function Home() {
   const handleReset = () => {
     setResult(null);
     setIsApiReady(false);
+    setBulletsRefreshing(false);
     pendingResult.current = null;
     setView("hero");
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
+
+  useEffect(() => {
+    if (view !== "results" || !result) return;
+    if (result.gemini_status !== "pending" || !result.bullets_token) return;
+
+    const token = result.bullets_token;
+    let cancelled = false;
+    setBulletsRefreshing(true);
+
+    (async () => {
+      try {
+        const res = await fetch("/api/scan/bullets", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ bullets_token: token }),
+          signal: AbortSignal.timeout(295_000),
+        });
+        const data = await res.json();
+        if (cancelled || !res.ok) return;
+
+        setResult((prev) =>
+          prev
+            ? {
+                ...prev,
+                threat_cards: data.threat_cards ?? prev.threat_cards,
+                gemini_configured: data.gemini_configured ?? prev.gemini_configured,
+                gemini_status: data.gemini_status ?? prev.gemini_status,
+                gemini_latency_ms: data.gemini_latency_ms ?? prev.gemini_latency_ms,
+                bullets_token: null,
+              }
+            : prev
+        );
+      } catch {
+        // Keep fact-locked template bullets if the deferred Gemini call fails.
+      } finally {
+        if (!cancelled) setBulletsRefreshing(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  // Intentionally keyed on token/status only — avoid re-fetch when threat_cards update.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, result?.bullets_token, result?.gemini_status]);
 
   return (
     <div className="min-h-screen flex flex-col pt-[76px] relative">
@@ -86,7 +133,11 @@ export default function Home() {
         )}
 
         {view === "results" && result && (
-          <ResultsDashboard result={result} onReset={handleReset} />
+          <ResultsDashboard
+            result={result}
+            onReset={handleReset}
+            bulletsRefreshing={bulletsRefreshing}
+          />
         )}
 
       </main>

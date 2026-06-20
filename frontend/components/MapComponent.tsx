@@ -172,6 +172,8 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
       map.remove();
       mapRef.current = null;
     };
+  // Mount once per MapComponent instance (ResultsDashboard key resets on new scan).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ── Update route when activeRoute changes ───────────────────────────────────
@@ -749,8 +751,7 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
         className="w-full h-[450px] md:h-[600px] rounded-2xl border border-slate-800 overflow-hidden"
       />
 
-      {(getFlightPaths().length > 0 || flightExposure) && (
-        <div className="mt-3 px-2 text-[10px] md:text-[11px] font-bold text-slate-400">
+      <div className="mt-3 px-2 text-[10px] md:text-[11px] font-bold text-slate-400">
           <div className="flex items-center justify-between gap-3">
             <div className="text-slate-200 font-black uppercase tracking-widest text-[11px]">
               ✈️ Flight Activity
@@ -759,6 +760,15 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
               Paths: <span className="text-cyan-300">{getFlightPaths().length}</span>
             </div>
           </div>
+
+          {getFlightPaths().length === 0 && (
+            <p className="mt-2 text-slate-500 font-semibold leading-snug max-w-3xl">
+              No ADS-B flight tracks in stored samples within {scanRadiusLabel} of this address.
+              {flightExposure?.data_quality === "unavailable"
+                ? " Exposure stats need ingested aircraft data — this is not a map error."
+                : " Aircraft may still pass outside the scan radius or below our altitude filter."}
+            </p>
+          )}
 
           {flightExposure && (
             <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -817,7 +827,6 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
             </div>
           )}
         </div>
-      )}
 
       <div className="flex flex-wrap justify-center sm:justify-start gap-x-4 gap-y-2 mt-4 px-2 text-[10px] md:text-[11px] font-bold text-slate-300">
         <span className="flex items-center gap-1"><span className="text-rose-500 text-lg">📍</span> Property</span>

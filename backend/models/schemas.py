@@ -4,6 +4,8 @@ from typing import Literal
 
 class ScanRequest(BaseModel):
     address: str
+    # When true, return map/score/template bullets immediately; call POST /scan/bullets for Gemini text.
+    defer_gemini: bool = False
 
 
 class Coordinate(BaseModel):
@@ -44,6 +46,20 @@ class ThreatCard(BaseModel):
     border_color: str
     text_color: str
     bullets: list[str]
+
+
+class BulletsRequest(BaseModel):
+    bullets_token: str
+
+
+class BulletsResponse(BaseModel):
+    threat_cards: list[ThreatCard]
+    gemini_configured: bool = False
+    gemini_status: str | None = None
+    gemini_latency_ms: int | None = None
+    gemini_timeout_seconds: float | None = None
+    gemini_error_kind: str | None = None
+    gemini_error_detail: str | None = None
 
 
 class Zone(BaseModel):
@@ -126,3 +142,5 @@ class ScanResponse(BaseModel):
     gemini_error_kind: str | None = None
     # Short, sanitized summary of the underlying exception (set only on status="error")
     gemini_error_detail: str | None = None
+    # Present when defer_gemini=true and Gemini bullets were not awaited on /scan.
+    bullets_token: str | None = None

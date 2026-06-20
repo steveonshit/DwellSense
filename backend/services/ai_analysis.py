@@ -10,6 +10,7 @@ import time
 import asyncio
 import hashlib
 import logging
+from dataclasses import dataclass
 import google.generativeai as genai
 from google.api_core import exceptions as google_exceptions
 from models.schemas import Coordinate, FlightPath, LogisticsCard
@@ -25,7 +26,9 @@ logger = logging.getLogger(__name__)
 
 # Bump this when bullet formatting / merge rules change so in-memory caches don't
 # serve stale card text across deploys.
-_ANALYSIS_CACHE_VERSION = "2026-06-18-polish-score-copy"
+_ANALYSIS_CACHE_VERSION = "2026-06-20-wellness-v2"
+
+_PENDING_BULLETS_TTL_SEC = 300
 
 # Allow override via env (Railway / local).
 # Default raised so Gemini can finish during end-to-end debugging.
@@ -140,6 +143,63 @@ def _classify_gemini_error(e: Exception) -> tuple[str, str]:
 
 # Simple in-memory cache: address hash → analysis result
 _analysis_cache: dict[str, dict] = {}
+
+
+@dataclass
+class PendingBulletsContext:
+    address: str
+    coord: Coordinate
+    crime: list[dict]
+    reports_311: list[dict]
+    permits: list[dict]
+    evictions: list[dict]
+    logistics: list[LogisticsCard]
+    flight_path: FlightPath | None
+    crime_count: int
+    reports_count: int
+    permit_count: int
+    eviction_count: int
+    noise_count: int
+    construction_311_count: int
+    chrome_ctx: CardChromeContext
+    template_fb: dict[str, list[str]]
+    risk: dict
+    scan_radius_miles: float
+    cache_key: str
+
+
+_pending_bullets: dict[str, tuple[float, PendingBulletsContext]] = {}
+
+
+def _purge_expired_pending() -> None:
+    now = time.monotonic()
+    for key, (expires, _) in list(_pending_bullets.items()):
+        if expires < now:
+            del _pending_bullets[key]
+
+
+def _store_pending(ctx: PendingBulletsContext) -> str:
+    _purge_expired_pending()
+    _pending_bullets[ctx.cache_key] = (time.monotonic() + _PENDING_BULLETS_TTL_SEC, ctx)
+    return ctx.cache_key
+
+
+def _gemini_meta(
+    *,
+    configured: bool,
+    status: str | None,
+    latency_ms: int | None = None,
+    error_kind: str | None = None,
+    error_detail: str | None = None,
+) -> dict:
+    return {
+        "gemini_configured": configured,
+        "gemini_status": status,
+        "gemini_latency_ms": latency_ms,
+        "gemini_timeout_seconds": _GEMINI_TIMEOUT_REPORT,
+        "gemini_error_kind": error_kind,
+        "gemini_error_detail": error_detail,
+    }
 
 BULLETS_SYSTEM_PROMPT = """You are DwellSense, a renter-focused real estate forensics assistant.
 You receive a data brief about one NYC address. Write ONLY the nine threat-card bullet lists.
@@ -691,6 +751,178 @@ def _card_chrome_ctx(
     )
 
 
+async def _run_gemini_bullets(ctx: PendingBulletsContext) -> dict:
+    """Call Gemini for threat-card bullets; fall back to template bullets on failure."""
+    raw_gemini_env = (os.getenv("GEMINI_API_KEY") or "").strip()
+    gemini_api_key = _effective_gemini_key(raw_gemini_env)
+    if not gemini_api_key:
+        fb = _fallback_bullets_by_id(
+            ctx.crime_count,
+            ctx.reports_count,
+            ctx.permit_count,
+            ctx.eviction_count,
+            _third_bullet_no_key(),
+        )
+        fb = _finalize_threat_bullets(
+            fb,
+            crime_count=ctx.crime_count,
+            reports_count=ctx.reports_count,
+            permit_count=ctx.permit_count,
+            eviction_count=ctx.eviction_count,
+            noise_count=ctx.noise_count,
+            construction_311_count=ctx.construction_311_count,
+            flight_path=ctx.flight_path,
+            scan_radius_miles=ctx.scan_radius_miles,
+        )
+        return {
+            **ctx.risk,
+            "threat_cards": cards_from_specs_and_bullets(fb, ctx.chrome_ctx),
+            **_gemini_meta(configured=False, status="no_key" if not raw_gemini_env else "placeholder"),
+        }
+
+    gemini_model_name = (os.getenv("GEMINI_MODEL") or "gemini-2.5-flash").strip()
+    genai.configure(api_key=gemini_api_key)
+    model = genai.GenerativeModel(
+        model_name=gemini_model_name,
+        system_instruction=BULLETS_SYSTEM_PROMPT,
+        generation_config=genai.GenerationConfig(
+            temperature=0.35,
+            max_output_tokens=_GEMINI_MAX_OUTPUT_TOKENS,
+            response_mime_type="application/json",
+        ),
+    )
+
+    flight_text = (
+        f"Flight path: {ctx.flight_path.label}"
+        if ctx.flight_path
+        else "No major flight corridor detected near this address."
+    )
+
+    prompt = (
+        "ADDRESS: " + ctx.address + "\n"
+        f"COORD: {ctx.coord.lat:.5f},{ctx.coord.lng:.5f}\n"
+        f"CRIME_30D_{ctx.scan_radius_miles:g}MI: {_summarize_crime(ctx.crime)}\n"
+        f"SR311_30D_{ctx.scan_radius_miles:g}MI: {_summarize_311(ctx.reports_311)}\n"
+        f"SR311_NOISE_30D: count={ctx.noise_count}\n"
+        f"SR311_CONSTRUCTION_30D: count={ctx.construction_311_count}\n"
+        f"PERMITS_90D_{ctx.scan_radius_miles:g}MI: {_summarize_permits(ctx.permits)}\n"
+        f"EVICTIONS_NEARBY: count={ctx.eviction_count}\n"
+        f"LOGISTICS: {_summarize_logistics(ctx.logistics)}\n"
+        f"FLIGHT: {flight_text}\n"
+        "\n"
+        "Return the 27 bullets JSON only. Use the numbers above; don't invent new stats."
+    )
+
+    async def _call_gemini_bullets() -> dict[str, list[str]]:
+        if _GEMINI_TIMEOUT > 0:
+            response = await asyncio.wait_for(
+                asyncio.to_thread(model.generate_content, prompt),
+                timeout=_GEMINI_TIMEOUT,
+            )
+        else:
+            response = await asyncio.to_thread(model.generate_content, prompt)
+        raw = _extract_text_from_response(response)
+        if not raw:
+            fb = getattr(response, "prompt_feedback", None)
+            logger.error("Gemini returned empty text. prompt_feedback=%s", fb)
+            raise ValueError("Empty Gemini response (blocked or no candidates)")
+        data = _parse_ai_json(raw)
+        inner = data.get("bullets") if isinstance(data, dict) else None
+        if not isinstance(inner, dict):
+            raise ValueError("Missing or invalid 'bullets' object in Gemini JSON")
+        gemini_map: dict[str, list[str]] = {}
+        for cid in ordered_card_ids():
+            row = inner.get(cid)
+            gemini_map[cid] = row if isinstance(row, list) else []
+        merged = _merge_bullets_with_fallback(ctx.template_fb, gemini_map)
+        return _finalize_threat_bullets(
+            merged,
+            crime_count=ctx.crime_count,
+            reports_count=ctx.reports_count,
+            permit_count=ctx.permit_count,
+            eviction_count=ctx.eviction_count,
+            noise_count=ctx.noise_count,
+            construction_311_count=ctx.construction_311_count,
+            flight_path=ctx.flight_path,
+            scan_radius_miles=ctx.scan_radius_miles,
+        )
+
+    for attempt in range(2):
+        t0 = time.monotonic()
+        try:
+            bullets_by_id = await _call_gemini_bullets()
+            latency_ms = int((time.monotonic() - t0) * 1000)
+            return {
+                **ctx.risk,
+                "threat_cards": cards_from_specs_and_bullets(bullets_by_id, ctx.chrome_ctx),
+                **_gemini_meta(configured=True, status="ok", latency_ms=latency_ms),
+            }
+        except asyncio.TimeoutError:
+            latency_ms = int((time.monotonic() - t0) * 1000)
+            logger.error(
+                "Gemini timed out after %.1fs (measured %.0fms) — using fallback bullets.",
+                _GEMINI_TIMEOUT,
+                latency_ms,
+            )
+            return {
+                **ctx.risk,
+                "threat_cards": cards_from_specs_and_bullets(ctx.template_fb, ctx.chrome_ctx),
+                **_gemini_meta(configured=True, status="timeout", latency_ms=latency_ms),
+            }
+        except Exception as e:
+            if attempt == 0:
+                logger.warning("Gemini attempt 1 failed (%s), retrying once…", e)
+                await asyncio.sleep(1.5)
+                continue
+            latency_ms = int((time.monotonic() - t0) * 1000)
+            error_kind, error_detail = _classify_gemini_error(e)
+            logger.exception(
+                "Gemini failed after retry (kind=%s, %.0fms) — using fallback bullets",
+                error_kind,
+                latency_ms,
+            )
+            return {
+                **ctx.risk,
+                "threat_cards": cards_from_specs_and_bullets(ctx.template_fb, ctx.chrome_ctx),
+                **_gemini_meta(
+                    configured=True,
+                    status="error",
+                    latency_ms=latency_ms,
+                    error_kind=error_kind,
+                    error_detail=error_detail or None,
+                ),
+            }
+
+    return {
+        **ctx.risk,
+        "threat_cards": cards_from_specs_and_bullets(ctx.template_fb, ctx.chrome_ctx),
+        **_gemini_meta(configured=True, status="error"),
+    }
+
+
+async def complete_deferred_bullets(bullets_token: str) -> dict | None:
+    """Finish a deferred Gemini bullets call using a token from POST /scan."""
+    token = (bullets_token or "").strip()
+    if not token:
+        return None
+
+    if token in _analysis_cache:
+        hit = _analysis_cache[token]
+        if hit.get("gemini_status") not in (None, "pending"):
+            return hit
+
+    _purge_expired_pending()
+    pending = _pending_bullets.get(token)
+    if not pending:
+        return None
+    _, ctx = pending
+
+    result = await _run_gemini_bullets(ctx)
+    _analysis_cache[ctx.cache_key] = result
+    _pending_bullets.pop(token, None)
+    return result
+
+
 async def analyze(
     address: str,
     coord: Coordinate,
@@ -705,6 +937,7 @@ async def analyze(
     reports_capped: bool = False,
     permits_capped: bool = False,
     evictions_capped: bool = False,
+    defer_gemini: bool = False,
 ) -> dict:
     """
     Python builds danger score + card chrome; Gemini writes bullets only.
@@ -793,48 +1026,10 @@ async def analyze(
         result = {
             **risk,
             "threat_cards": cards_from_specs_and_bullets(fb, chrome_ctx),
-            "gemini_configured": False,
-            "gemini_status": _pre_status,
-            "gemini_latency_ms": None,
-            "gemini_timeout_seconds": _GEMINI_TIMEOUT_REPORT,
-            "gemini_error_kind": None,
-            "gemini_error_detail": None,
+            **_gemini_meta(configured=False, status=_pre_status),
         }
         _analysis_cache[cache_key] = result
         return result
-
-    gemini_model_name = (os.getenv("GEMINI_MODEL") or "gemini-2.5-flash").strip()
-    genai.configure(api_key=gemini_api_key)
-    model = genai.GenerativeModel(
-        model_name=gemini_model_name,
-        system_instruction=BULLETS_SYSTEM_PROMPT,
-        generation_config=genai.GenerationConfig(
-            temperature=0.35,
-            max_output_tokens=_GEMINI_MAX_OUTPUT_TOKENS,
-            response_mime_type="application/json",
-        ),
-    )
-
-    flight_text = (
-        f"Flight path: {flight_path.label}"
-        if flight_path
-        else "No major flight corridor detected near this address."
-    )
-
-    prompt = (
-        "ADDRESS: " + address + "\n"
-        f"COORD: {coord.lat:.5f},{coord.lng:.5f}\n"
-        f"CRIME_30D_{scan_radius_miles:g}MI: {_summarize_crime(crime)}\n"
-        f"SR311_30D_{scan_radius_miles:g}MI: {_summarize_311(reports_311)}\n"
-        f"SR311_NOISE_30D: count={noise_count}\n"
-        f"SR311_CONSTRUCTION_30D: count={construction_311_count}\n"
-        f"PERMITS_90D_{scan_radius_miles:g}MI: {_summarize_permits(permits)}\n"
-        f"EVICTIONS_NEARBY: count={eviction_count}\n"
-        f"LOGISTICS: {_summarize_logistics(logistics)}\n"
-        f"FLIGHT: {flight_text}\n"
-        "\n"
-        "Return the 27 bullets JSON only. Use the numbers above; don't invent new stats."
-    )
 
     template_fb = _fallback_bullets_by_id(
         crime_count, reports_count, permit_count, eviction_count, _third_bullet_ai_failed()
@@ -851,99 +1046,38 @@ async def analyze(
         scan_radius_miles=scan_radius_miles,
     )
 
-    async def _call_gemini_bullets() -> dict[str, list[str]]:
-        if _GEMINI_TIMEOUT > 0:
-            response = await asyncio.wait_for(
-                asyncio.to_thread(model.generate_content, prompt),
-                timeout=_GEMINI_TIMEOUT,
-            )
-        else:
-            response = await asyncio.to_thread(model.generate_content, prompt)
-        raw = _extract_text_from_response(response)
-        if not raw:
-            fb = getattr(response, "prompt_feedback", None)
-            logger.error("Gemini returned empty text. prompt_feedback=%s", fb)
-            raise ValueError("Empty Gemini response (blocked or no candidates)")
-        data = _parse_ai_json(raw)
-        inner = data.get("bullets") if isinstance(data, dict) else None
-        if not isinstance(inner, dict):
-            raise ValueError("Missing or invalid 'bullets' object in Gemini JSON")
-        # Coerce to str lists; missing keys handled in merge
-        gemini_map: dict[str, list[str]] = {}
-        for cid in ordered_card_ids():
-            row = inner.get(cid)
-            gemini_map[cid] = row if isinstance(row, list) else []
-        merged = _merge_bullets_with_fallback(template_fb, gemini_map)
-        return _finalize_threat_bullets(
-            merged,
-            crime_count=crime_count,
-            reports_count=reports_count,
-            permit_count=permit_count,
-            eviction_count=eviction_count,
-            noise_count=noise_count,
-            construction_311_count=construction_311_count,
-            flight_path=flight_path,
-            scan_radius_miles=scan_radius_miles,
-        )
+    pending_ctx = PendingBulletsContext(
+        address=address,
+        coord=coord,
+        crime=crime,
+        reports_311=reports_311,
+        permits=permits,
+        evictions=evictions,
+        logistics=logistics,
+        flight_path=flight_path,
+        crime_count=crime_count,
+        reports_count=reports_count,
+        permit_count=permit_count,
+        eviction_count=eviction_count,
+        noise_count=noise_count,
+        construction_311_count=construction_311_count,
+        chrome_ctx=chrome_ctx,
+        template_fb=template_fb,
+        risk=risk,
+        scan_radius_miles=scan_radius_miles,
+        cache_key=cache_key,
+    )
 
-    for attempt in range(2):
-        t0 = time.monotonic()
-        try:
-            bullets_by_id = await _call_gemini_bullets()
-            latency_ms = int((time.monotonic() - t0) * 1000)
-            result = {
-                **risk,
-                "threat_cards": cards_from_specs_and_bullets(bullets_by_id, chrome_ctx),
-                "gemini_configured": True,
-                "gemini_status": "ok",
-                "gemini_latency_ms": latency_ms,
-                "gemini_timeout_seconds": _GEMINI_TIMEOUT_REPORT,
-                "gemini_error_kind": None,
-                "gemini_error_detail": None,
-            }
-            _analysis_cache[cache_key] = result
-            return result
-        except asyncio.TimeoutError:
-            latency_ms = int((time.monotonic() - t0) * 1000)
-            logger.error(
-                "Gemini timed out after %.1fs (measured %.0fms) — using fallback bullets. "
-                "Increase GEMINI_TIMEOUT_SECONDS if needed.",
-                _GEMINI_TIMEOUT,
-                latency_ms,
-            )
-            result = {
-                **risk,
-                "threat_cards": cards_from_specs_and_bullets(template_fb, chrome_ctx),
-                "gemini_configured": True,
-                "gemini_status": "timeout",
-                "gemini_latency_ms": latency_ms,
-                "gemini_timeout_seconds": _GEMINI_TIMEOUT_REPORT,
-                "gemini_error_kind": None,
-                "gemini_error_detail": None,
-            }
-            _analysis_cache[cache_key] = result
-            return result
-        except Exception as e:
-            if attempt == 0:
-                logger.warning("Gemini attempt 1 failed (%s), retrying once…", e)
-                await asyncio.sleep(1.5)
-                continue
-            latency_ms = int((time.monotonic() - t0) * 1000)
-            error_kind, error_detail = _classify_gemini_error(e)
-            logger.exception(
-                "Gemini failed after retry (kind=%s, %.0fms) — using fallback bullets",
-                error_kind,
-                latency_ms,
-            )
-            result = {
-                **risk,
-                "threat_cards": cards_from_specs_and_bullets(template_fb, chrome_ctx),
-                "gemini_configured": True,
-                "gemini_status": "error",
-                "gemini_latency_ms": latency_ms,
-                "gemini_timeout_seconds": _GEMINI_TIMEOUT_REPORT,
-                "gemini_error_kind": error_kind,
-                "gemini_error_detail": error_detail or None,
-            }
-            _analysis_cache[cache_key] = result
-            return result
+    if defer_gemini:
+        bullets_token = _store_pending(pending_ctx)
+        result = {
+            **risk,
+            "threat_cards": cards_from_specs_and_bullets(template_fb, chrome_ctx),
+            "bullets_token": bullets_token,
+            **_gemini_meta(configured=True, status="pending"),
+        }
+        return result
+
+    result = await _run_gemini_bullets(pending_ctx)
+    _analysis_cache[cache_key] = result
+    return result

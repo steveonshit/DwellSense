@@ -12,8 +12,21 @@ from typing import Any
 
 from services import city_data
 
-# High 311 volume should temper the wellness label even when crime is low.
+# High 311 volume should temper the wellness label even when crime is quiet.
 _HIGH_311_REPORTS_THRESHOLD = 200
+_ELEVATED_311_REPORTS_THRESHOLD = 80
+
+# v2 label bands (wellness score 0–100, higher is better).
+_LABEL_BANDS: list[tuple[int, str, str]] = [
+    (15, "EXTREME", "Terrible"),
+    (28, "HIGH", "Bad"),
+    (42, "MODERATE", "Average"),
+    (55, "LOW", "Good"),
+    (68, "LOW", "Very Good"),
+    (80, "LOW", "Great"),
+    (90, "LOW", "Excellent"),
+    (100, "LOW", "Outstanding"),
+]
 
 # Order matches the UI carousel / original Gemini system prompt.
 CARD_SPECS: list[dict[str, Any]] = [
@@ -148,6 +161,133 @@ def resolve_card_colors(card_id: str, ctx: CardChromeContext) -> tuple[str, str]
     return calm_slate
 
 
+def _percentile_from_count(
+    x: int,
+    *,
+    median_count: float,
+    p90_count: float,
+) -> float:
+    x = max(0, int(x))
+    lx = math.log1p(x)
+    l50 = math.log1p(max(0.0, float(median_count)))
+    l90 = math.log1p(max(1e-6, float(p90_count)))
+    denom = max(1e-6, (l90 - l50))
+    k = 2.2 / denom
+    z = (lx - l50) * k
+    return 1.0 / (1.0 + math.exp(-z))
+
+
+def _base_wellness_score(
+    crime_count: int,
+    reports_count: int,
+    permit_count: int,
+    eviction_count: int,
+) -> int:
+    """Single hazard → wellness model (NYC-calibrated percentiles, inverted)."""
+    crime_p = _percentile_from_count(crime_count, median_count=8, p90_count=42)
+    reports_p = _percentile_from_count(reports_count, median_count=15, p90_count=65)
+    permits_p = _percentile_from_count(permit_count, median_count=1, p90_count=7)
+    evict_p = _percentile_from_count(eviction_count, median_count=0.5, p90_count=3)
+
+    hazard_01 = (
+        (0.40 * crime_p)
+        + (0.26 * reports_p)
+        + (0.14 * permits_p)
+        + (0.20 * evict_p)
+    )
+    wellness = int(round(max(0.0, min(100.0, 100.0 - hazard_01 * 100.0))))
+    # NYC realism: dense city baseline, not suburb scoring.
+    return max(0, wellness - 5)
+
+
+def _apply_311_adjustment(
+    wellness: int,
+    *,
+    crime_count: int,
+    reports_count: int,
+) -> int:
+    """One 311 path — extra penalty when complaint volume is high but crime is quiet."""
+    if reports_count >= _HIGH_311_REPORTS_THRESHOLD and crime_count < 8:
+        excess = reports_count - _HIGH_311_REPORTS_THRESHOLD
+        penalty = min(24, int(4.5 * math.log1p(excess / 45)))
+        return max(0, wellness - penalty)
+    if reports_count >= _ELEVATED_311_REPORTS_THRESHOLD and crime_count < 5:
+        excess = reports_count - _ELEVATED_311_REPORTS_THRESHOLD
+        penalty = min(12, int(2.5 * math.log1p(excess / 90)))
+        return max(0, wellness - penalty)
+    return wellness
+
+
+def _apply_safety_caps(
+    wellness: int,
+    *,
+    crime_count: int,
+    reports_count: int,
+    permit_count: int,
+    eviction_count: int,
+    capped: bool,
+) -> int:
+    """Soft ceilings for serious signals — avoids stacking with duplicate penalties."""
+    score = wellness
+    if crime_count >= 10:
+        score = min(score, 38)
+    elif crime_count >= 3:
+        score = min(score, 50)
+    elif crime_count >= 1:
+        score = min(score, 58)
+
+    if eviction_count >= 2:
+        score = min(score, 44)
+    elif eviction_count >= 1:
+        score = min(score, 54)
+
+    if permit_count >= 4:
+        score = min(score, 52)
+    elif permit_count >= 2:
+        score = min(score, 62)
+
+    if capped:
+        score = min(score, 74)
+
+    return max(0, score)
+
+
+def _label_for_score(
+    score: int,
+    *,
+    crime_count: int,
+    reports_count: int,
+    permit_count: int,
+    eviction_count: int,
+) -> tuple[str, str]:
+    """Map score to label; gate Excellent/Outstanding on multiple clean signals."""
+    risk_level = "MODERATE"
+    risk_label = "Average"
+    for ceiling, level, label in _LABEL_BANDS:
+        if score <= ceiling:
+            risk_level, risk_label = level, label
+            break
+
+    # Empty radius is often sparse data, not proof of excellence.
+    all_clear = (
+        crime_count == 0
+        and reports_count == 0
+        and permit_count == 0
+        and eviction_count == 0
+    )
+    if all_clear and risk_label in ("Excellent", "Outstanding", "Great"):
+        risk_level, risk_label = "LOW", "Very Good"
+
+    # Top tiers require more than one clean signal.
+    if risk_label in ("Excellent", "Outstanding"):
+        if crime_count > 0 or eviction_count > 0 or reports_count >= 120 or permit_count >= 3:
+            risk_level, risk_label = "LOW", "Great"
+        elif reports_count >= 40 or permit_count >= 1:
+            risk_level, risk_label = "LOW", "Excellent" if score >= 86 else "Great"
+
+    return risk_level, risk_label
+
+
 def compute_risk_from_counts(
     crime_count: int,
     reports_count: int,
@@ -160,69 +300,30 @@ def compute_risk_from_counts(
     evictions_capped: bool = False,
 ) -> dict[str, Any]:
     """
-    Percentile-style scoring (Option C), inverted for UX:
-
-    - Internally we estimate a 0..100 "raw hazard" from municipal counts.
-    - We return `danger_score` as a **0..100 wellness-oriented score** where **100 is best** and **0 is worst**.
+    v2 wellness scoring: one percentile model + one 311 adjustment + soft caps + gated labels.
+    `danger_score` is 0–100 where **100 is best**.
     """
-
-    def _percentile_from_count(
-        x: int,
-        *,
-        median_count: float,
-        p90_count: float,
-    ) -> float:
-        x = max(0, int(x))
-        # logistic over log1p(x); ensures diminishing returns and smooth percentiles
-        lx = math.log1p(x)
-        l50 = math.log1p(max(0.0, float(median_count)))
-        l90 = math.log1p(max(1e-6, float(p90_count)))
-        # Choose k so that p90 roughly maps near 0.90 (not exactly, but close)
-        denom = max(1e-6, (l90 - l50))
-        k = 2.2 / denom
-        z = (lx - l50) * k
-        return 1.0 / (1.0 + math.exp(-z))
-
-    # Baselines (approx NYC-wide) — tune after we test a few addresses.
-    crime_p = _percentile_from_count(crime_count, median_count=8, p90_count=45)
-    reports_p = _percentile_from_count(reports_count, median_count=12, p90_count=70)
-    permits_p = _percentile_from_count(permit_count, median_count=1, p90_count=8)
-    evict_p = _percentile_from_count(eviction_count, median_count=0.5, p90_count=3)
-
-    # Weighting (sums to 1.0)
-    score_01 = (
-        (0.40 * crime_p)
-        + (0.25 * reports_p)
-        + (0.15 * permits_p)
-        + (0.20 * evict_p)
-    )
-
-    raw_hazard = int(round(max(0.0, min(1.0, score_01)) * 100))
-
     capped = crime_capped or reports_capped or permits_capped or evictions_capped
 
-    safety_score = int(round(max(0.0, min(100.0, 100 - raw_hazard))))
-
-    # Dense 311 neighborhoods should not read as "strong signals" when crime is quiet.
-    if reports_count >= _HIGH_311_REPORTS_THRESHOLD and crime_count < 8:
-        excess = max(0, reports_count - _HIGH_311_REPORTS_THRESHOLD)
-        penalty = min(18, int(4 * math.log1p(excess / 50)))
-        safety_score = max(0, safety_score - penalty)
-
-    # If any dataset hits our fetch cap, the true neighborhood density may be higher than
-    # the counted rows. Don't claim a "perfect" safety score when we're truncated.
-    if capped:
-        safety_score = min(safety_score, 90)
-
-    # Bands are based on SAFETY (higher is better).
-    if safety_score <= 20:
-        risk_level, risk_label = "EXTREME", "WEAK SIGNALS"
-    elif safety_score <= 40:
-        risk_level, risk_label = "HIGH", "BELOW-AVERAGE"
-    elif safety_score <= 60:
-        risk_level, risk_label = "MODERATE", "MIXED SIGNALS"
-    else:
-        risk_level, risk_label = "LOW", "STRONG SIGNALS"
+    wellness = _base_wellness_score(crime_count, reports_count, permit_count, eviction_count)
+    wellness = _apply_311_adjustment(
+        wellness, crime_count=crime_count, reports_count=reports_count
+    )
+    wellness = _apply_safety_caps(
+        wellness,
+        crime_count=crime_count,
+        reports_count=reports_count,
+        permit_count=permit_count,
+        eviction_count=eviction_count,
+        capped=capped,
+    )
+    risk_level, risk_label = _label_for_score(
+        wellness,
+        crime_count=crime_count,
+        reports_count=reports_count,
+        permit_count=permit_count,
+        eviction_count=eviction_count,
+    )
 
     suffix_parts: list[str] = []
     if capped:
@@ -242,7 +343,7 @@ def compute_risk_from_counts(
     )
 
     return {
-        "danger_score": safety_score,
+        "danger_score": wellness,
         "risk_level": risk_level,
         "risk_label": risk_label,
         "risk_description": risk_description,

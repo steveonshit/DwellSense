@@ -120,4 +120,7 @@ export interface ScanResult {
   flight_exposure?: FlightExposure | null;
   /** From backend: whether a real GEMINI_API_KEY was loaded (check Network → /api/scan response). */
   gemini_configured?: boolean;
+  gemini_status?: string | null;
+  gemini_latency_ms?: number | null;
+  bullets_token?: string | null;
 }
