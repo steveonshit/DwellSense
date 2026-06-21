@@ -7,7 +7,7 @@ interface Props {
   isApiReady: boolean;
 }
 
-const AD_DURATION = 5; // seconds
+const AD_DURATION = 7; // seconds — skip only after full countdown
 
 export default function LoadingAd({ onComplete, isApiReady }: Props) {
   const [secondsLeft, setSecondsLeft] = useState(AD_DURATION);
@@ -24,42 +24,31 @@ export default function LoadingAd({ onComplete, isApiReady }: Props) {
   };
 
   useEffect(() => {
-    // Show skip button after 2 seconds
-    const skipTimer = setTimeout(() => setShowSkip(true), 2000);
-
     intervalRef.current = setInterval(() => {
-      setSecondsLeft((s) => {
-        if (s <= 1) {
-          // Ad timer expired — complete only if API is also ready
-          if (isApiReady) complete();
-          return 0;
-        }
-        return s - 1;
-      });
+      setSecondsLeft((s) => (s <= 1 ? 0 : s - 1));
     }, 1000);
 
     return () => {
-      clearTimeout(skipTimer);
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // When API finishes AND timer has already expired → complete
+  // When countdown finishes, reveal skip; auto-advance if scan is already back
   useEffect(() => {
-    if (isApiReady && secondsLeft === 0) {
-      complete();
+    if (secondsLeft === 0) {
+      setShowSkip(true);
+      if (isApiReady) complete();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isApiReady, secondsLeft]);
 
   const handleSkip = () => {
+    if (!showSkip) return;
     setSkipped(true);
     if (isApiReady) {
       complete();
     }
-    // If API is not ready yet, we just hide the timer — complete() will be called
-    // as soon as isApiReady becomes true (handled by the useEffect above)
   };
 
   // If user skipped but API just became ready
@@ -127,8 +116,10 @@ export default function LoadingAd({ onComplete, isApiReady }: Props) {
             <strong className="text-white">$5/mo</strong>.
           </p>
           <button
+            type="button"
+            disabled={!showSkip}
             onClick={handleSkip}
-            className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-2 px-6 rounded-lg transition-colors shadow-lg shadow-indigo-900/50"
+            className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold py-2 px-6 rounded-lg transition-colors shadow-lg shadow-indigo-900/50"
           >
             Get a Free Quote ↗
           </button>
