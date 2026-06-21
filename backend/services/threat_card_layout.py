@@ -16,6 +16,20 @@ from services import city_data
 _HIGH_311_REPORTS_THRESHOLD = 200
 _ELEVATED_311_REPORTS_THRESHOLD = 80
 
+# NYC ~2 mi calibration for banner copy (absolute 311 counts are much higher at 2 mi).
+_BANNER_CALIB: dict[str, tuple[float, float]] = {
+    "crime": (8, 42),
+    "311": (500, 2200),
+    "permits": (1, 7),
+    "evictions": (0.5, 3),
+}
+_BANNER_WEIGHTS: dict[str, float] = {
+    "crime": 0.40,
+    "311": 0.26,
+    "permits": 0.14,
+    "evictions": 0.20,
+}
+
 # v2 label bands (wellness score 0–100, higher is better).
 _LABEL_BANDS: list[tuple[int, str, str]] = [
     (15, "EXTREME", "Terrible"),
@@ -298,39 +312,86 @@ def _311_reports_label(count: int) -> str:
     return f"{_format_count(count)} city reports"
 
 
-def _driver_signal(kind: str, count: int) -> tuple[float, str, str] | None:
-    """Return (priority, reason label, count snippet) for a signal worth mentioning."""
+def _banner_severity(percentile: float) -> str:
+    if percentile >= 0.85:
+        return "heavy"
+    if percentile >= 0.58:
+        return "moderate"
+    if percentile >= 0.32:
+        return "some"
+    return "low"
+
+
+def _factor_banner_phrase(kind: str, severity: str, count: int) -> tuple[str, str]:
+    """Return (reason label, count snippet) for one factor."""
     if kind == "crime":
-        if count >= 10:
-            return (100, "High crime nearby", f"{_format_count(count)} reports")
-        if count >= 3:
-            return (80, "Crime nearby", f"{_format_count(count)} reports")
-        if count >= 1:
-            word = "report" if count == 1 else "reports"
-            return (60, "Some crime nearby", f"{count} {word}")
-    if kind == "evictions":
-        if count >= 2:
-            return (85, "Evictions nearby", f"{count} filings")
-        if count >= 1:
-            return (65, "Eviction nearby", "1 filing")
+        count_snip = f"{_format_count(count)} NYPD reports" if count >= 10 else (
+            f"{count} NYPD report" if count == 1 else f"{count} NYPD reports"
+        )
+        labels = {
+            "heavy": "High crime nearby",
+            "moderate": "Crime nearby",
+            "some": "Some crime nearby",
+            "low": "Low crime",
+        }
+        return labels[severity], count_snip
     if kind == "311":
-        if count >= _HIGH_311_REPORTS_THRESHOLD:
-            return (75, "Heavy 311 (city reports) nearby", _311_reports_label(count))
-        if count >= _ELEVATED_311_REPORTS_THRESHOLD:
-            return (55, "Lots of 311 (city reports) nearby", _311_reports_label(count))
-        if count >= 40:
-            return (35, "311 (city reports) nearby", _311_reports_label(count))
+        labels = {
+            "heavy": "Heavy 311 (city reports) nearby",
+            "moderate": "Moderate 311 (city reports) nearby",
+            "some": "Some 311 (city reports) nearby",
+            "low": "Low 311 (city reports)",
+        }
+        return labels[severity], _311_reports_label(count)
     if kind == "permits":
-        if count >= 4:
-            return (50, "Construction nearby", f"{count} permits")
-        if count >= 2:
-            return (30, "Construction nearby", f"{count} permits")
-        if count >= 1:
-            return (20, "Construction nearby", "1 permit")
-    return None
+        word = "permit" if count == 1 else "permits"
+        count_snip = f"{count} {word}"
+        labels = {
+            "heavy": "Heavy construction nearby",
+            "moderate": "Construction nearby",
+            "some": "Some construction nearby",
+            "low": "Low construction",
+        }
+        return labels[severity], count_snip
+    if kind == "evictions":
+        count_snip = "1 filing" if count == 1 else f"{count} filings"
+        labels = {
+            "heavy": "Heavy evictions nearby",
+            "moderate": "Evictions nearby",
+            "some": "Some evictions nearby",
+            "low": "Low evictions",
+        }
+        return labels[severity], count_snip
+    return "", ""
+
+
+def _banner_factor_stats(
+    crime_count: int,
+    reports_count: int,
+    permit_count: int,
+    eviction_count: int,
+) -> list[tuple[float, str, str, str, float]]:
+    """Weighted impact, kind, reason, count snippet, percentile — highest impact first."""
+    counts = {
+        "crime": crime_count,
+        "311": reports_count,
+        "permits": permit_count,
+        "evictions": eviction_count,
+    }
+    rows: list[tuple[float, str, str, str, float]] = []
+    for kind, count in counts.items():
+        median, p90 = _BANNER_CALIB[kind]
+        percentile = _percentile_from_count(count, median_count=median, p90_count=p90)
+        severity = _banner_severity(percentile)
+        reason, count_snip = _factor_banner_phrase(kind, severity, count)
+        impact = _BANNER_WEIGHTS[kind] * percentile
+        rows.append((impact, kind, reason, count_snip, percentile))
+    rows.sort(key=lambda row: (-row[0], -row[4]))
+    return rows
 
 
 def _build_risk_description(
+    wellness: int,
     crime_count: int,
     reports_count: int,
     permit_count: int,
@@ -338,20 +399,9 @@ def _build_risk_description(
     *,
     capped: bool,
 ) -> str:
-    """One short sentence: reason first, then the number."""
+    """One short sentence tied to what actually moves the score for this address."""
     scan_mi = city_data.get_scan_radius_miles()
     mi_label = f"~{scan_mi:g} mi"
-
-    drivers: list[tuple[float, str, str]] = []
-    for kind, count in (
-        ("crime", crime_count),
-        ("evictions", eviction_count),
-        ("311", reports_count),
-        ("permits", permit_count),
-    ):
-        signal = _driver_signal(kind, count)
-        if signal:
-            drivers.append(signal)
 
     all_clear = (
         crime_count == 0
@@ -359,20 +409,73 @@ def _build_risk_description(
         and permit_count == 0
         and eviction_count == 0
     )
-
     if all_clear:
         sentence = f"No crime, 311 (city reports), evictions, or permits in {mi_label}."
-    elif not drivers:
-        sentence = f"Nothing major in {mi_label}."
-    elif len(drivers) == 1:
-        _, reason, count_snip = drivers[0]
-        sentence = f"{reason} — {count_snip} in {mi_label}."
     else:
-        drivers.sort(key=lambda item: -item[0])
-        top = drivers[:2]
-        reasons = " + ".join(reason for _, reason, _ in top)
-        counts = ", ".join(count_snip for _, _, count_snip in top)
-        sentence = f"{reasons} — {counts} in {mi_label}."
+        stats = _banner_factor_stats(
+            crime_count, reports_count, permit_count, eviction_count
+        )
+        counts = {
+            "crime": crime_count,
+            "311": reports_count,
+            "permits": permit_count,
+            "evictions": eviction_count,
+        }
+        problems = [
+            row for row in stats if _banner_severity(row[4]) in ("heavy", "moderate", "some")
+        ]
+        # Prefer factors that materially affect the score; fall back to top weighted signal.
+        notable = [row for row in problems if row[0] >= 0.12 or _banner_severity(row[4]) != "low"]
+        if not notable and problems:
+            notable = problems[:1]
+        elif not notable:
+            notable = stats[:1]
+
+        def _display_rank(row: tuple[float, str, str, str, float]) -> float:
+            impact, kind, _, _, percentile = row
+            rank = impact
+            count = counts[kind]
+            if kind == "crime" and count >= 3:
+                rank += 0.14
+            elif kind == "evictions" and count >= 1:
+                rank += 0.12
+            elif kind == "permits" and count >= 3:
+                rank += 0.08
+            elif kind == "311" and _banner_severity(percentile) == "heavy":
+                rank += 0.05
+            return rank
+
+        notable.sort(key=lambda row: (-_display_rank(row), -row[4]))
+
+        lows = [
+            row
+            for row in stats
+            if _banner_severity(row[4]) == "low"
+            and (
+                counts[row[1]] > 0
+                or row[1] in ("crime", "311")
+            )
+        ]
+        if wellness >= 55 and len(problems) <= 1 and (
+            not problems or _banner_severity(problems[0][4]) in ("some", "low")
+        ):
+            if len(lows) >= 2:
+                sentence = (
+                    f"{lows[0][2].replace(' nearby', '')} and "
+                    f"{lows[1][2].replace(' nearby', '').lower()} in {mi_label}."
+                )
+            elif lows:
+                sentence = f"{lows[0][2]} in {mi_label}."
+            else:
+                sentence = f"Nothing major in {mi_label}."
+        elif len(notable) == 1:
+            _, _, reason, count_snip, _ = notable[0]
+            sentence = f"{reason} — {count_snip} in {mi_label}."
+        else:
+            top = notable[:2]
+            reasons = " + ".join(row[2] for row in top)
+            counts = ", ".join(row[3] for row in top)
+            sentence = f"{reasons} — {counts} in {mi_label}."
 
     if capped:
         return sentence + " Count cap may apply in dense areas."
@@ -417,6 +520,7 @@ def compute_risk_from_counts(
     )
 
     risk_description = _build_risk_description(
+        wellness,
         crime_count,
         reports_count,
         permit_count,
