@@ -294,8 +294,8 @@ def _format_count(n: int) -> str:
 
 def _311_reports_label(count: int) -> str:
     if count == 1:
-        return "1 311 report"
-    return f"{_format_count(count)} 311 reports"
+        return "1 city report"
+    return f"{_format_count(count)} city reports"
 
 
 def _driver_signal(kind: str, count: int) -> tuple[float, str, str] | None:
