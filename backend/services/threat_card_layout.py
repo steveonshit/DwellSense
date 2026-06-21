@@ -294,8 +294,8 @@ def _format_count(n: int) -> str:
 
 def _311_reports_label(count: int) -> str:
     if count == 1:
-        return "1 311 report (city report)"
-    return f"{_format_count(count)} 311 reports (city reports)"
+        return "1 311 report"
+    return f"{_format_count(count)} 311 reports"
 
 
 def _driver_signal(kind: str, count: int) -> tuple[float, str, str] | None:
@@ -315,11 +315,11 @@ def _driver_signal(kind: str, count: int) -> tuple[float, str, str] | None:
             return (65, "Eviction nearby", "1 filing")
     if kind == "311":
         if count >= _HIGH_311_REPORTS_THRESHOLD:
-            return (75, "Heavy 311 nearby", _311_reports_label(count))
+            return (75, "Heavy 311 (city reports) nearby", _311_reports_label(count))
         if count >= _ELEVATED_311_REPORTS_THRESHOLD:
-            return (55, "Lots of 311 nearby", _311_reports_label(count))
+            return (55, "Lots of 311 (city reports) nearby", _311_reports_label(count))
         if count >= 40:
-            return (35, "311 nearby", _311_reports_label(count))
+            return (35, "311 (city reports) nearby", _311_reports_label(count))
     if kind == "permits":
         if count >= 4:
             return (50, "Construction nearby", f"{count} permits")
@@ -361,7 +361,7 @@ def _build_risk_description(
     )
 
     if all_clear:
-        sentence = f"No crime, 311 reports (city reports), evictions, or permits in {mi_label}."
+        sentence = f"No crime, 311 (city reports), evictions, or permits in {mi_label}."
     elif not drivers:
         sentence = f"Nothing major in {mi_label}."
     elif len(drivers) == 1:
