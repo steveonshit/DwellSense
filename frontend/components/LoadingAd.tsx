@@ -75,8 +75,9 @@ export default function LoadingAd({ onComplete, isApiReady }: Props) {
           </span>
 
           {!showSkip && (
-            <span className="text-rose-400 text-sm font-black bg-slate-800 min-w-[2.25rem] px-3 py-1.5 rounded border border-slate-700 inline-block text-center tabular-nums">
-              {secondsLeft}s
+            <span className="text-white text-xs font-bold bg-slate-800 px-3 py-1.5 rounded border border-slate-700 inline-block tabular-nums">
+              Skip in{" "}
+              <span className="text-rose-400 font-black">{secondsLeft}s</span>
             </span>
           )}
 
