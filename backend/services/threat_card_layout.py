@@ -16,19 +16,26 @@ from services import city_data
 _HIGH_311_REPORTS_THRESHOLD = 200
 _ELEVATED_311_REPORTS_THRESHOLD = 80
 
-# NYC ~2 mi calibration for banner copy (absolute 311 counts are much higher at 2 mi).
-_BANNER_CALIB: dict[str, tuple[float, float]] = {
+# Percentile anchors for wellness scoring (shared by score + banner reasoning).
+_SCORE_CALIB: dict[str, tuple[float, float]] = {
     "crime": (8, 42),
-    "311": (500, 2200),
+    "311": (15, 65),
     "permits": (1, 7),
     "evictions": (0.5, 3),
 }
-_BANNER_WEIGHTS: dict[str, float] = {
+_SCORE_WEIGHTS: dict[str, float] = {
     "crime": 0.40,
     "311": 0.26,
     "permits": 0.14,
     "evictions": 0.20,
 }
+_FACTOR_NAMES: dict[str, str] = {
+    "crime": "NYPD crime reports",
+    "311": "311 (city reports)",
+    "permits": "construction permits",
+    "evictions": "eviction filings",
+}
+_MIN_DRAG_TO_MENTION = 4.0
 
 # v2 label bands (wellness score 0–100, higher is better).
 _LABEL_BANDS: list[tuple[int, str, str]] = [
@@ -198,17 +205,8 @@ def _base_wellness_score(
     eviction_count: int,
 ) -> int:
     """Single hazard → wellness model (NYC-calibrated percentiles, inverted)."""
-    crime_p = _percentile_from_count(crime_count, median_count=8, p90_count=42)
-    reports_p = _percentile_from_count(reports_count, median_count=15, p90_count=65)
-    permits_p = _percentile_from_count(permit_count, median_count=1, p90_count=7)
-    evict_p = _percentile_from_count(eviction_count, median_count=0.5, p90_count=3)
-
-    hazard_01 = (
-        (0.40 * crime_p)
-        + (0.26 * reports_p)
-        + (0.14 * permits_p)
-        + (0.20 * evict_p)
-    )
+    drags, _ = _score_factor_drags(crime_count, reports_count, permit_count, eviction_count)
+    hazard_01 = sum(drags.values()) / 100.0
     wellness = int(round(max(0.0, min(100.0, 100.0 - hazard_01 * 100.0))))
     # NYC realism: dense city baseline, not suburb scoring.
     return max(0, wellness - 5)
@@ -312,82 +310,82 @@ def _311_reports_label(count: int) -> str:
     return f"{_format_count(count)} city reports"
 
 
-def _banner_severity(percentile: float) -> str:
-    if percentile >= 0.85:
-        return "heavy"
-    if percentile >= 0.58:
-        return "moderate"
-    if percentile >= 0.32:
-        return "some"
-    return "low"
-
-
-def _factor_banner_phrase(kind: str, severity: str, count: int) -> tuple[str, str]:
-    """Return (reason label, count snippet) for one factor."""
-    if kind == "crime":
-        count_snip = f"{_format_count(count)} NYPD reports" if count >= 10 else (
-            f"{count} NYPD report" if count == 1 else f"{count} NYPD reports"
-        )
-        labels = {
-            "heavy": "High crime nearby",
-            "moderate": "Crime nearby",
-            "some": "Some crime nearby",
-            "low": "Low crime",
-        }
-        return labels[severity], count_snip
-    if kind == "311":
-        labels = {
-            "heavy": "Heavy 311 (city reports) nearby",
-            "moderate": "Moderate 311 (city reports) nearby",
-            "some": "Some 311 (city reports) nearby",
-            "low": "Low 311 (city reports)",
-        }
-        return labels[severity], _311_reports_label(count)
-    if kind == "permits":
-        word = "permit" if count == 1 else "permits"
-        count_snip = f"{count} {word}"
-        labels = {
-            "heavy": "Heavy construction nearby",
-            "moderate": "Construction nearby",
-            "some": "Some construction nearby",
-            "low": "Low construction",
-        }
-        return labels[severity], count_snip
-    if kind == "evictions":
-        count_snip = "1 filing" if count == 1 else f"{count} filings"
-        labels = {
-            "heavy": "Heavy evictions nearby",
-            "moderate": "Evictions nearby",
-            "some": "Some evictions nearby",
-            "low": "Low evictions",
-        }
-        return labels[severity], count_snip
-    return "", ""
-
-
-def _banner_factor_stats(
+def _score_factor_drags(
     crime_count: int,
     reports_count: int,
     permit_count: int,
     eviction_count: int,
-) -> list[tuple[float, str, str, str, float]]:
-    """Weighted impact, kind, reason, count snippet, percentile — highest impact first."""
+) -> tuple[dict[str, float], dict[str, float]]:
+    """Points each municipal factor pulls off a perfect 100 (same math as scoring)."""
     counts = {
         "crime": crime_count,
         "311": reports_count,
         "permits": permit_count,
         "evictions": eviction_count,
     }
-    rows: list[tuple[float, str, str, str, float]] = []
+    percentiles: dict[str, float] = {}
+    drags: dict[str, float] = {}
     for kind, count in counts.items():
-        median, p90 = _BANNER_CALIB[kind]
+        median, p90 = _SCORE_CALIB[kind]
         percentile = _percentile_from_count(count, median_count=median, p90_count=p90)
-        severity = _banner_severity(percentile)
-        reason, count_snip = _factor_banner_phrase(kind, severity, count)
-        impact = _BANNER_WEIGHTS[kind] * percentile
-        rows.append((impact, kind, reason, count_snip, percentile))
-    rows.sort(key=lambda row: (-row[0], -row[4]))
-    return rows
+        percentiles[kind] = percentile
+        drags[kind] = _SCORE_WEIGHTS[kind] * percentile * 100.0
+    return drags, percentiles
+
+
+def _count_snippet(kind: str, count: int) -> str:
+    if kind == "crime":
+        if count >= 10:
+            return f"{_format_count(count)} NYPD reports"
+        return f"{count} NYPD report" if count == 1 else f"{count} NYPD reports"
+    if kind == "311":
+        return _311_reports_label(count)
+    if kind == "permits":
+        return "1 permit" if count == 1 else f"{count} permits"
+    if kind == "evictions":
+        return "1 filing" if count == 1 else f"{count} filings"
+    return str(count)
+
+
+def _cap_explanation(
+    score_before_caps: int,
+    score_after_caps: int,
+    crime_count: int,
+    permit_count: int,
+    eviction_count: int,
+    *,
+    capped: bool,
+) -> str | None:
+    """Short note when a safety or sample cap limited the score."""
+    if score_after_caps >= score_before_caps:
+        return None
+
+    notes: list[str] = []
+    if crime_count >= 10 and score_after_caps <= 38:
+        notes.append("high crime cap")
+    elif crime_count >= 3 and score_after_caps <= 50:
+        notes.append("crime cap")
+    elif crime_count >= 1 and score_after_caps <= 58:
+        notes.append("crime cap")
+
+    if eviction_count >= 2 and score_after_caps <= 44:
+        notes.append("eviction cap")
+    elif eviction_count >= 1 and score_after_caps <= 54:
+        notes.append("eviction cap")
+
+    if permit_count >= 4 and score_after_caps <= 52:
+        notes.append("construction cap")
+    elif permit_count >= 2 and score_after_caps <= 62:
+        notes.append("construction cap")
+
+    if capped and score_after_caps <= 74:
+        notes.append("sample count cap")
+
+    if not notes:
+        return "Score capped by a safety limit."
+    if len(notes) == 1:
+        return f"Score limited by a {notes[0]}."
+    return f"Score limited by {' and '.join(notes[:2])}."
 
 
 def _build_risk_description(
@@ -399,86 +397,106 @@ def _build_risk_description(
     *,
     capped: bool,
 ) -> str:
-    """One short sentence tied to what actually moves the score for this address."""
+    """Explain the wellness score using the same inputs and adjustments as scoring."""
     scan_mi = city_data.get_scan_radius_miles()
     mi_label = f"~{scan_mi:g} mi"
+    counts = {
+        "crime": crime_count,
+        "311": reports_count,
+        "permits": permit_count,
+        "evictions": eviction_count,
+    }
 
-    all_clear = (
-        crime_count == 0
-        and reports_count == 0
-        and permit_count == 0
-        and eviction_count == 0
-    )
+    all_clear = all(counts[k] == 0 for k in counts)
     if all_clear:
-        sentence = f"No crime, 311 (city reports), evictions, or permits in {mi_label}."
-    else:
-        stats = _banner_factor_stats(
-            crime_count, reports_count, permit_count, eviction_count
-        )
-        counts = {
-            "crime": crime_count,
-            "311": reports_count,
-            "permits": permit_count,
-            "evictions": eviction_count,
-        }
-        problems = [
-            row for row in stats if _banner_severity(row[4]) in ("heavy", "moderate", "some")
+        return f"No crime, 311 (city reports), evictions, or permits in {mi_label}."
+
+    drags, _ = _score_factor_drags(
+        crime_count, reports_count, permit_count, eviction_count
+    )
+    score_after_base = _base_wellness_score(
+        crime_count, reports_count, permit_count, eviction_count
+    )
+    score_after_311 = _apply_311_adjustment(
+        score_after_base,
+        crime_count=crime_count,
+        reports_count=reports_count,
+    )
+    extra_311_drag = float(score_after_base - score_after_311)
+    score_after_caps = _apply_safety_caps(
+        score_after_311,
+        crime_count=crime_count,
+        reports_count=reports_count,
+        permit_count=permit_count,
+        eviction_count=eviction_count,
+        capped=capped,
+    )
+
+    score_drivers: list[tuple[str, float, int]] = [
+        (kind, drag, counts[kind])
+        for kind, drag in drags.items()
+        if drag >= _MIN_DRAG_TO_MENTION and counts[kind] > 0
+    ]
+    if extra_311_drag >= _MIN_DRAG_TO_MENTION:
+        score_drivers.append(("311_extra", extra_311_drag, reports_count))
+    score_drivers.sort(key=lambda row: -row[1])
+
+    has_311_extra = extra_311_drag >= _MIN_DRAG_TO_MENTION
+    if has_311_extra:
+        score_drivers = [row for row in score_drivers if row[0] != "311_extra"]
+
+    cap_note = _cap_explanation(
+        score_after_311,
+        score_after_caps,
+        crime_count,
+        permit_count,
+        eviction_count,
+        capped=capped,
+    )
+
+    max_drag = score_drivers[0][1] if score_drivers else 0.0
+    if wellness >= 55 and max_drag < 12:
+        low_factors = sorted(drags.items(), key=lambda item: item[1])[:2]
+        labels = [
+            f"low {_FACTOR_NAMES[kind].split('(')[0].strip().lower()}"
+            for kind, _ in low_factors
         ]
-        # Prefer factors that materially affect the score; fall back to top weighted signal.
-        notable = [row for row in problems if row[0] >= 0.12 or _banner_severity(row[4]) != "low"]
-        if not notable and problems:
-            notable = problems[:1]
-        elif not notable:
-            notable = stats[:1]
-
-        def _display_rank(row: tuple[float, str, str, str, float]) -> float:
-            impact, kind, _, _, percentile = row
-            rank = impact
-            count = counts[kind]
-            if kind == "crime" and count >= 3:
-                rank += 0.14
-            elif kind == "evictions" and count >= 1:
-                rank += 0.12
-            elif kind == "permits" and count >= 3:
-                rank += 0.08
-            elif kind == "311" and _banner_severity(percentile) == "heavy":
-                rank += 0.05
-            return rank
-
-        notable.sort(key=lambda row: (-_display_rank(row), -row[4]))
-
-        lows = [
-            row
-            for row in stats
-            if _banner_severity(row[4]) == "low"
-            and (
-                counts[row[1]] > 0
-                or row[1] in ("crime", "311")
-            )
-        ]
-        if wellness >= 55 and len(problems) <= 1 and (
-            not problems or _banner_severity(problems[0][4]) in ("some", "low")
-        ):
-            if len(lows) >= 2:
-                sentence = (
-                    f"{lows[0][2].replace(' nearby', '')} and "
-                    f"{lows[1][2].replace(' nearby', '').lower()} in {mi_label}."
-                )
-            elif lows:
-                sentence = f"{lows[0][2]} in {mi_label}."
-            else:
-                sentence = f"Nothing major in {mi_label}."
-        elif len(notable) == 1:
-            _, _, reason, count_snip, _ = notable[0]
-            sentence = f"{reason} — {count_snip} in {mi_label}."
+        if len(labels) == 2:
+            sentence = f"Score held up by {labels[0]} and {labels[1]} in {mi_label}."
+        elif labels:
+            sentence = f"Score held up by {labels[0]} in {mi_label}."
         else:
-            top = notable[:2]
-            reasons = " + ".join(row[2] for row in top)
-            counts = ", ".join(row[3] for row in top)
-            sentence = f"{reasons} — {counts} in {mi_label}."
+            sentence = f"Nothing major dragging the score in {mi_label}."
+    elif not score_drivers:
+        sentence = f"Nothing major dragging the score in {mi_label}."
+    elif len(score_drivers) == 1:
+        kind, _, count = score_drivers[0]
+        extra_clause = (
+            ", with extra weight for high 311 vs low crime"
+            if kind == "311" and has_311_extra
+            else ""
+        )
+        sentence = (
+            f"Score mainly reflects {_FACTOR_NAMES[kind]} — "
+            f"{_count_snippet(kind, count)} in {mi_label}{extra_clause}."
+        )
+    else:
+        top = score_drivers[:2]
+        factor_bits: list[str] = []
+        count_bits: list[str] = []
+        for kind, _, count in top:
+            label = _FACTOR_NAMES[kind]
+            if kind == "311" and has_311_extra:
+                label = f"{label} (extra weight vs low crime)"
+            factor_bits.append(label)
+            count_bits.append(_count_snippet(kind, count))
+        sentence = (
+            f"Score reflects {' and '.join(factor_bits)} — "
+            f"{', '.join(count_bits)} in {mi_label}."
+        )
 
-    if capped:
-        return sentence + " Count cap may apply in dense areas."
+    if cap_note:
+        return f"{sentence} {cap_note}"
     return sentence
 
 
