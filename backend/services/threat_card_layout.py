@@ -288,6 +288,88 @@ def _label_for_score(
     return risk_level, risk_label
 
 
+def _format_count(n: int) -> str:
+    return f"{int(n):,}"
+
+
+def _build_risk_description(
+    wellness: int,
+    crime_count: int,
+    reports_count: int,
+    permit_count: int,
+    eviction_count: int,
+    *,
+    capped: bool,
+) -> str:
+    """One or two plain sentences explaining why the wellness score landed where it did."""
+    scan_mi = city_data.get_scan_radius_miles()
+    mi_label = f"~{scan_mi:g} mile{'s' if abs(scan_mi - 1) > 0.01 else ''}"
+
+    drivers: list[tuple[float, str]] = []
+
+    if crime_count >= 10:
+        drivers.append((100, f"high crime ({_format_count(crime_count)} NYPD reports)"))
+    elif crime_count >= 3:
+        drivers.append((80, f"notable crime ({_format_count(crime_count)} reports)"))
+    elif crime_count >= 1:
+        word = "report" if crime_count == 1 else "reports"
+        drivers.append((60, f"{crime_count} nearby crime {word}"))
+
+    if eviction_count >= 2:
+        drivers.append((85, f"{eviction_count} eviction filings"))
+    elif eviction_count >= 1:
+        drivers.append((65, "a nearby eviction filing"))
+
+    if reports_count >= _HIGH_311_REPORTS_THRESHOLD:
+        drivers.append((75, f"very high 311 volume ({_format_count(reports_count)} complaints)"))
+    elif reports_count >= _ELEVATED_311_REPORTS_THRESHOLD:
+        drivers.append((55, f"elevated 311 complaints ({_format_count(reports_count)})"))
+    elif reports_count >= 40:
+        drivers.append((35, f"moderate 311 activity ({_format_count(reports_count)} complaints)"))
+
+    if permit_count >= 4:
+        drivers.append((50, f"active construction ({permit_count} permits)"))
+    elif permit_count >= 2:
+        drivers.append((30, f"construction activity ({permit_count} permits)"))
+    elif permit_count >= 1:
+        drivers.append((20, "an active construction permit"))
+
+    all_clear = (
+        crime_count == 0
+        and reports_count == 0
+        and permit_count == 0
+        and eviction_count == 0
+    )
+
+    if all_clear:
+        if wellness >= 70:
+            sentence = (
+                f"No crime, 311, permit, or eviction records within {mi_label} in our data — "
+                "a calm picture, though sparse data can limit certainty."
+            )
+        else:
+            sentence = (
+                f"No major signals within {mi_label} in our data — "
+                "the score reflects limited records, not proof the block is problem-free."
+            )
+    elif not drivers:
+        sentence = (
+            f"Low municipal activity within {mi_label}; "
+            "the score reflects typical NYC baseline noise."
+        )
+    else:
+        drivers.sort(key=lambda item: -item[0])
+        parts = [label for _, label in drivers[:2]]
+        if len(parts) == 1:
+            sentence = f"This score is mainly due to {parts[0]} within {mi_label}."
+        else:
+            sentence = f"This score reflects {parts[0]} and {parts[1]} within {mi_label}."
+
+    if capped:
+        return sentence + " Some counts may be capped in very dense areas."
+    return sentence
+
+
 def compute_risk_from_counts(
     crime_count: int,
     reports_count: int,
@@ -325,21 +407,13 @@ def compute_risk_from_counts(
         eviction_count=eviction_count,
     )
 
-    suffix_parts: list[str] = []
-    if capped:
-        suffix_parts.append("Counts may be capped by our data sample limits in very dense areas.")
-    if reports_count >= _HIGH_311_REPORTS_THRESHOLD:
-        suffix_parts.append(
-            f"High 311 volume ({reports_count} complaints nearby) — see the 311 card and map pins; "
-            "the wellness score weights crime and evictions more than every complaint type."
-        )
-
-    scan_mi = city_data.get_scan_radius_miles()
-    risk_description = (
-        f"Analysis based on {crime_count} crime reports, {reports_count} 311 calls, "
-        f"{permit_count} active permits, and {eviction_count} eviction filings "
-        f"within ~{scan_mi:g} miles."
-        + (" " + " ".join(suffix_parts) if suffix_parts else "")
+    risk_description = _build_risk_description(
+        wellness,
+        crime_count,
+        reports_count,
+        permit_count,
+        eviction_count,
+        capped=capped,
     )
 
     return {
