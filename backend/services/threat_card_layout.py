@@ -29,13 +29,14 @@ _SCORE_WEIGHTS: dict[str, float] = {
     "permits": 0.14,
     "evictions": 0.20,
 }
-_FACTOR_NAMES: dict[str, str] = {
-    "crime": "NYPD crime reports",
-    "311": "311 (city reports)",
-    "permits": "construction permits",
-    "evictions": "eviction filings",
-}
 _MIN_DRAG_TO_MENTION = 4.0
+# Renter-facing lot/little labels at ~2 mi (display only; score math unchanged).
+_VOLUME_CALIB: dict[str, tuple[float, float]] = {
+    "crime": (8, 42),
+    "311": (500, 2200),
+    "permits": (1, 7),
+    "evictions": (0.5, 3),
+}
 
 # v2 label bands (wellness score 0–100, higher is better).
 _LABEL_BANDS: list[tuple[int, str, str]] = [
@@ -304,10 +305,34 @@ def _format_count(n: int) -> str:
     return f"{int(n):,}"
 
 
-def _311_reports_label(count: int) -> str:
-    if count == 1:
-        return "1 city report"
-    return f"{_format_count(count)} city reports"
+def _volume_word(percentile: float) -> str:
+    if percentile >= 0.58:
+        return "A lot of"
+    if percentile >= 0.32:
+        return "Some"
+    return "Little"
+
+
+def _factor_banner_line(kind: str, count: int) -> str:
+    """Qualitative label first, then the exact count."""
+    median, p90 = _VOLUME_CALIB[kind]
+    volume = _volume_word(
+        _percentile_from_count(count, median_count=median, p90_count=p90)
+    )
+    if kind == "311":
+        city = "city report" if count == 1 else "city reports"
+        return f"{volume} 311 reports — {_format_count(count)} {city}"
+    if kind == "crime":
+        word = "report" if count == 1 else "reports"
+        n = _format_count(count) if count >= 10 else str(count)
+        return f"{volume} NYPD crime — {n} {word}"
+    if kind == "permits":
+        word = "permit" if count == 1 else "permits"
+        return f"{volume} construction — {count} {word}"
+    if kind == "evictions":
+        word = "filing" if count == 1 else "filings"
+        return f"{volume} evictions — {count} {word}"
+    return f"{volume} activity — {count} in area"
 
 
 def _score_factor_drags(
@@ -331,20 +356,6 @@ def _score_factor_drags(
         percentiles[kind] = percentile
         drags[kind] = _SCORE_WEIGHTS[kind] * percentile * 100.0
     return drags, percentiles
-
-
-def _count_snippet(kind: str, count: int) -> str:
-    if kind == "crime":
-        if count >= 10:
-            return f"{_format_count(count)} NYPD reports"
-        return f"{count} NYPD report" if count == 1 else f"{count} NYPD reports"
-    if kind == "311":
-        return _311_reports_label(count)
-    if kind == "permits":
-        return "1 permit" if count == 1 else f"{count} permits"
-    if kind == "evictions":
-        return "1 filing" if count == 1 else f"{count} filings"
-    return str(count)
 
 
 def _cap_explanation(
@@ -389,7 +400,6 @@ def _cap_explanation(
 
 
 def _build_risk_description(
-    wellness: int,
     crime_count: int,
     reports_count: int,
     permit_count: int,
@@ -440,10 +450,16 @@ def _build_risk_description(
     if extra_311_drag >= _MIN_DRAG_TO_MENTION:
         score_drivers.append(("311_extra", extra_311_drag, reports_count))
     score_drivers.sort(key=lambda row: -row[1])
+    score_drivers = [row for row in score_drivers if row[0] != "311_extra"]
 
-    has_311_extra = extra_311_drag >= _MIN_DRAG_TO_MENTION
-    if has_311_extra:
-        score_drivers = [row for row in score_drivers if row[0] != "311_extra"]
+    def _is_notable_driver(kind: str, count: int) -> bool:
+        median, p90 = _VOLUME_CALIB[kind]
+        volume = _volume_word(
+            _percentile_from_count(count, median_count=median, p90_count=p90)
+        )
+        return volume != "Little"
+
+    notable_drivers = [row for row in score_drivers if _is_notable_driver(row[0], row[2])]
 
     cap_note = _cap_explanation(
         score_after_311,
@@ -454,42 +470,15 @@ def _build_risk_description(
         capped=capped,
     )
 
-    max_drag = score_drivers[0][1] if score_drivers else 0.0
-    mentions_311 = any(row[0] == "311" for row in score_drivers[:2])
-    extra_311_note = (
-        ", with lots of complaints but little NYPD crime nearby"
-        if has_311_extra and mentions_311
-        else ""
-    )
-
-    if wellness >= 55 and max_drag < 12:
-        low_factors = sorted(drags.items(), key=lambda item: item[1])[:2]
-        labels = [
-            f"low {_FACTOR_NAMES[kind].split('(')[0].strip().lower()}"
-            for kind, _ in low_factors
-        ]
-        if len(labels) == 2:
-            sentence = f"{labels[0].capitalize()} and {labels[1]} in {mi_label}."
-        elif labels:
-            sentence = f"{labels[0].capitalize()} in {mi_label}."
-        else:
-            sentence = f"Nothing major in {mi_label}."
-    elif not score_drivers:
+    if not notable_drivers:
         sentence = f"Nothing major in {mi_label}."
-    elif len(score_drivers) == 1:
-        kind, _, count = score_drivers[0]
-        sentence = (
-            f"{_FACTOR_NAMES[kind]} — {_count_snippet(kind, count)} in {mi_label}"
-            f"{extra_311_note}."
-        )
+    elif len(notable_drivers) == 1:
+        kind, _, count = notable_drivers[0]
+        sentence = f"{_factor_banner_line(kind, count)} in {mi_label}."
     else:
-        top = score_drivers[:2]
-        factor_bits = [_FACTOR_NAMES[kind] for kind, _, _ in top]
-        count_bits = [_count_snippet(kind, count) for kind, _, count in top]
-        sentence = (
-            f"{' and '.join(factor_bits)} — "
-            f"{', '.join(count_bits)} in {mi_label}{extra_311_note}."
-        )
+        top = notable_drivers[:2]
+        parts = [_factor_banner_line(kind, count) for kind, _, count in top]
+        sentence = f"{' and '.join(parts)} in {mi_label}."
 
     if cap_note:
         return f"{sentence} {cap_note}"
@@ -534,7 +523,6 @@ def compute_risk_from_counts(
     )
 
     risk_description = _build_risk_description(
-        wellness,
         crime_count,
         reports_count,
         permit_count,
