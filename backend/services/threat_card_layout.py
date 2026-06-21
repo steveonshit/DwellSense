@@ -292,51 +292,39 @@ def _format_count(n: int) -> str:
     return f"{int(n):,}"
 
 
-def _driver_phrase(
-    kind: str,
-    count: int,
-) -> tuple[float, str] | None:
-    """Return (priority, plain phrase) for a signal worth mentioning."""
+def _driver_signal(kind: str, count: int) -> tuple[float, str, str] | None:
+    """Return (priority, reason label, count snippet) for a signal worth mentioning."""
     if kind == "crime":
         if count >= 10:
-            return (100, f"{_format_count(count)} NYPD crime reports")
+            return (100, "High crime nearby", f"{_format_count(count)} reports")
         if count >= 3:
-            return (80, f"{_format_count(count)} crime reports")
+            return (80, "Crime nearby", f"{_format_count(count)} reports")
         if count >= 1:
             word = "report" if count == 1 else "reports"
-            return (60, f"{count} crime {word}")
-    elif kind == "evictions":
+            return (60, "Some crime nearby", f"{count} {word}")
+    if kind == "evictions":
         if count >= 2:
-            return (85, f"{count} eviction filings")
+            return (85, "Evictions nearby", f"{count} filings")
         if count >= 1:
-            return (65, "1 eviction filing")
-    elif kind == "311":
+            return (65, "Eviction nearby", "1 filing")
+    if kind == "311":
         if count >= _HIGH_311_REPORTS_THRESHOLD:
-            return (75, f"{_format_count(count)} neighbor 311 complaints")
+            return (75, "Heavy 311 nearby", f"{_format_count(count)} calls")
         if count >= _ELEVATED_311_REPORTS_THRESHOLD:
-            return (55, f"{_format_count(count)} 311 complaints from neighbors")
+            return (55, "Lots of 311 nearby", f"{_format_count(count)} calls")
         if count >= 40:
-            return (35, f"{_format_count(count)} 311 complaints")
-    elif kind == "permits":
+            return (35, "311 activity nearby", f"{_format_count(count)} calls")
+    if kind == "permits":
         if count >= 4:
-            return (50, f"{count} active construction permits")
+            return (50, "Construction nearby", f"{count} permits")
         if count >= 2:
-            return (30, f"{count} construction permits")
+            return (30, "Construction nearby", f"{count} permits")
         if count >= 1:
-            return (20, "1 active construction permit")
+            return (20, "Construction nearby", "1 permit")
     return None
 
 
-def _join_phrases(parts: list[str]) -> str:
-    if len(parts) == 1:
-        return parts[0]
-    if len(parts) == 2:
-        return f"{parts[0]} and {parts[1]}"
-    return ", ".join(parts[:-1]) + f", and {parts[-1]}"
-
-
 def _build_risk_description(
-    wellness: int,
     crime_count: int,
     reports_count: int,
     permit_count: int,
@@ -344,20 +332,20 @@ def _build_risk_description(
     *,
     capped: bool,
 ) -> str:
-    """One or two plain sentences on what's driving the score."""
+    """One short sentence: reason first, then the number."""
     scan_mi = city_data.get_scan_radius_miles()
-    mi_label = f"~{scan_mi:g} mile{'s' if abs(scan_mi - 1) > 0.01 else ''}"
+    mi_label = f"~{scan_mi:g} mi"
 
-    drivers: list[tuple[float, str]] = []
+    drivers: list[tuple[float, str, str]] = []
     for kind, count in (
         ("crime", crime_count),
         ("evictions", eviction_count),
         ("311", reports_count),
         ("permits", permit_count),
     ):
-        phrase = _driver_phrase(kind, count)
-        if phrase:
-            drivers.append(phrase)
+        signal = _driver_signal(kind, count)
+        if signal:
+            drivers.append(signal)
 
     all_clear = (
         crime_count == 0
@@ -367,25 +355,21 @@ def _build_risk_description(
     )
 
     if all_clear:
-        if wellness >= 70:
-            sentence = (
-                f"We didn't find crime, evictions, permits, or 311 complaints within {mi_label}. "
-                "Quiet on paper — but sparse data doesn't prove much."
-            )
-        else:
-            sentence = (
-                f"Nothing major in our records within {mi_label}. "
-                "That isn't the same as a clean bill of health."
-            )
+        sentence = f"No crime, 311, evictions, or permits in {mi_label}."
     elif not drivers:
-        sentence = f"Not much turned up within {mi_label} — mostly normal NYC background noise."
+        sentence = f"Nothing major in {mi_label}."
+    elif len(drivers) == 1:
+        _, reason, count_snip = drivers[0]
+        sentence = f"{reason} — {count_snip} in {mi_label}."
     else:
         drivers.sort(key=lambda item: -item[0])
-        joined = _join_phrases([label for _, label in drivers[:2]])
-        sentence = f"{joined} within {mi_label}."
+        top = drivers[:2]
+        reasons = " + ".join(reason for _, reason, _ in top)
+        counts = ", ".join(count_snip for _, _, count_snip in top)
+        sentence = f"{reasons} — {counts} in {mi_label}."
 
     if capped:
-        return sentence + " Dense areas may hit our count cap."
+        return sentence + " Count cap may apply in dense areas."
     return sentence
 
 
@@ -427,7 +411,6 @@ def compute_risk_from_counts(
     )
 
     risk_description = _build_risk_description(
-        wellness,
         crime_count,
         reports_count,
         permit_count,
