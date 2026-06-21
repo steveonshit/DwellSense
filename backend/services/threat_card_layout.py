@@ -382,10 +382,10 @@ def _cap_explanation(
         notes.append("sample count cap")
 
     if not notes:
-        return "Score capped by a safety limit."
+        return "Capped by a safety limit."
     if len(notes) == 1:
-        return f"Score limited by a {notes[0]}."
-    return f"Score limited by {' and '.join(notes[:2])}."
+        return f"Capped due to {notes[0]}."
+    return f"Capped due to {' and '.join(notes[:2])}."
 
 
 def _build_risk_description(
@@ -455,6 +455,13 @@ def _build_risk_description(
     )
 
     max_drag = score_drivers[0][1] if score_drivers else 0.0
+    mentions_311 = any(row[0] == "311" for row in score_drivers[:2])
+    extra_311_note = (
+        ", with lots of complaints but little NYPD crime nearby"
+        if has_311_extra and mentions_311
+        else ""
+    )
+
     if wellness >= 55 and max_drag < 12:
         low_factors = sorted(drags.items(), key=lambda item: item[1])[:2]
         labels = [
@@ -462,37 +469,26 @@ def _build_risk_description(
             for kind, _ in low_factors
         ]
         if len(labels) == 2:
-            sentence = f"Score held up by {labels[0]} and {labels[1]} in {mi_label}."
+            sentence = f"{labels[0].capitalize()} and {labels[1]} in {mi_label}."
         elif labels:
-            sentence = f"Score held up by {labels[0]} in {mi_label}."
+            sentence = f"{labels[0].capitalize()} in {mi_label}."
         else:
-            sentence = f"Nothing major dragging the score in {mi_label}."
+            sentence = f"Nothing major in {mi_label}."
     elif not score_drivers:
-        sentence = f"Nothing major dragging the score in {mi_label}."
+        sentence = f"Nothing major in {mi_label}."
     elif len(score_drivers) == 1:
         kind, _, count = score_drivers[0]
-        extra_clause = (
-            ", with extra weight for high 311 vs low crime"
-            if kind == "311" and has_311_extra
-            else ""
-        )
         sentence = (
-            f"Score mainly reflects {_FACTOR_NAMES[kind]} — "
-            f"{_count_snippet(kind, count)} in {mi_label}{extra_clause}."
+            f"{_FACTOR_NAMES[kind]} — {_count_snippet(kind, count)} in {mi_label}"
+            f"{extra_311_note}."
         )
     else:
         top = score_drivers[:2]
-        factor_bits: list[str] = []
-        count_bits: list[str] = []
-        for kind, _, count in top:
-            label = _FACTOR_NAMES[kind]
-            if kind == "311" and has_311_extra:
-                label = f"{label} (extra weight vs low crime)"
-            factor_bits.append(label)
-            count_bits.append(_count_snippet(kind, count))
+        factor_bits = [_FACTOR_NAMES[kind] for kind, _, _ in top]
+        count_bits = [_count_snippet(kind, count) for kind, _, count in top]
         sentence = (
-            f"Score reflects {' and '.join(factor_bits)} — "
-            f"{', '.join(count_bits)} in {mi_label}."
+            f"{' and '.join(factor_bits)} — "
+            f"{', '.join(count_bits)} in {mi_label}{extra_311_note}."
         )
 
     if cap_note:
