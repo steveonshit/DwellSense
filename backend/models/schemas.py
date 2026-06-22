@@ -137,6 +137,8 @@ class ScanResponse(BaseModel):
     risk_level: Literal["LOW", "MODERATE", "HIGH", "EXTREME"]
     risk_label: str
     risk_description: str
+    # Primary factor behind banner copy: area_safety | 311 | permits | evictions | noise
+    banner_driver: str | None = None
     logistics: list[LogisticsCard]
     dining: list[RestaurantBarCard] = []
     threat_cards: list[ThreatCard]

@@ -50,8 +50,8 @@ export default function ResultsDashboard({ result, onReset, bulletsRefreshing = 
     };
   }, [result]);
 
-  const handleSee311Breakdown = useCallback(() => {
-    scrollToThreatCard("reports_311");
+  const handleScrollToCard = useCallback((cardId: string) => {
+    scrollToThreatCard(cardId);
   }, []);
 
   const handleHoverCard = useCallback((type: string | null) => {
@@ -86,7 +86,7 @@ export default function ResultsDashboard({ result, onReset, bulletsRefreshing = 
       <SideAds summary={sideSummary} />
       <div className="w-full space-y-5 pb-12 overflow-hidden relative z-20">
 
-        <DangerBanner result={result} onSee311Breakdown={handleSee311Breakdown} />
+        <DangerBanner result={result} onScrollToCard={handleScrollToCard} />
 
         <LogisticsCarousel
           cards={proximityCards}

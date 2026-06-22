@@ -1,6 +1,7 @@
 "use client";
 
 import { ScanResult } from "@/lib/types";
+import { resolveBannerBreakdown } from "@/lib/bannerDriver";
 
 const RISK_COLORS: Record<string, { bg: string; border: string; text: string; score: string }> = {
   EXTREME: {
@@ -31,21 +32,12 @@ const RISK_COLORS: Record<string, { bg: string; border: string; text: string; sc
 
 interface Props {
   result: ScanResult;
-  onSee311Breakdown?: () => void;
+  onScrollToCard?: (cardId: string) => void;
 }
 
-function shouldOffer311Link(result: ScanResult): boolean {
-  if (result.risk_description.toLowerCase().includes("311")) return true;
-  const card = result.threat_cards.find((c) => c.id === "reports_311");
-  if (!card?.bullets?.[0]) return false;
-  const match = card.bullets[0].match(/([\d,]+)\s+311/i);
-  if (!match) return false;
-  const count = parseInt(match[1].replace(/,/g, ""), 10);
-  return Number.isFinite(count) && count >= 200;
-}
-
-export default function DangerBanner({ result, onSee311Breakdown }: Props) {
+export default function DangerBanner({ result, onScrollToCard }: Props) {
   const colors = RISK_COLORS[result.risk_level] ?? RISK_COLORS.MODERATE;
+  const breakdown = resolveBannerBreakdown(result);
 
   return (
     <div
@@ -56,13 +48,13 @@ export default function DangerBanner({ result, onSee311Breakdown }: Props) {
           {result.risk_label}
         </h2>
         <p className={`${colors.text} text-sm mt-1 font-bold`}>{result.risk_description}</p>
-        {onSee311Breakdown && shouldOffer311Link(result) ? (
+        {breakdown && onScrollToCard ? (
           <button
             type="button"
-            onClick={onSee311Breakdown}
+            onClick={() => onScrollToCard(breakdown.cardId)}
             className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-purple-500/40 bg-purple-950/50 px-3 py-1 text-[11px] font-black uppercase tracking-wider text-purple-200 transition-colors hover:border-purple-400 hover:bg-purple-900/60"
           >
-            See 311 breakdown →
+            {breakdown.label} →
           </button>
         ) : null}
         {result.gemini_configured === false ? (

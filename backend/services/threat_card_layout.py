@@ -515,7 +515,7 @@ def _build_risk_description(
     noise_count: int,
     *,
     capped: bool,
-) -> str:
+) -> tuple[str, str | None]:
     """Explain the wellness score using the same inputs and adjustments as scoring."""
     scan_mi = city_data.get_scan_radius_miles()
     mi_label = f"~{scan_mi:g} mi"
@@ -530,8 +530,11 @@ def _build_risk_description(
     all_clear = all(counts[k] == 0 for k in counts)
     if all_clear:
         return (
-            f"No area safety issues, city reports, evictions, construction permits, "
-            f"or noise complaints in {mi_label}."
+            (
+                f"No area safety issues, city reports, evictions, construction permits, "
+                f"or noise complaints in {mi_label}."
+            ),
+            None,
         )
 
     score_after_base = _base_wellness_score(
@@ -582,9 +585,10 @@ def _build_risk_description(
         ]
         sentence = f"{' and '.join(parts)} in {mi_label}."
 
+    primary_driver = drivers[0][0] if drivers else None
     if cap_note:
-        return f"{sentence} {cap_note}"
-    return sentence
+        return f"{sentence} {cap_note}", primary_driver
+    return sentence, primary_driver
 
 
 def compute_risk_from_counts(
@@ -625,7 +629,7 @@ def compute_risk_from_counts(
         eviction_count=eviction_count,
     )
 
-    risk_description = _build_risk_description(
+    risk_description, banner_driver = _build_risk_description(
         wellness,
         crime_count,
         reports_count,
@@ -640,6 +644,7 @@ def compute_risk_from_counts(
         "risk_level": risk_level,
         "risk_label": risk_label,
         "risk_description": risk_description,
+        "banner_driver": banner_driver,
     }
 
 

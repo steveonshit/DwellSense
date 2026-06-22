@@ -124,6 +124,8 @@ export interface ScanResult {
   risk_level: "LOW" | "MODERATE" | "HIGH" | "EXTREME";
   risk_label: string;
   risk_description: string;
+  /** Primary wellness banner factor — maps to a threat card breakdown link. */
+  banner_driver?: string | null;
   logistics: LogisticsCard[];
   dining?: RestaurantBarCard[];
   threat_cards: ThreatCard[];

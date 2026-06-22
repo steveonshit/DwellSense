@@ -199,6 +199,7 @@ async def scan(request: ScanRequest):
         risk_level=risk_level,
         risk_label=f"{emoji} {label_text}",
         risk_description=ai_result.get("risk_description", ""),
+        banner_driver=ai_result.get("banner_driver"),
         logistics=logistics,
         dining=dining,
         threat_cards=threat_cards,

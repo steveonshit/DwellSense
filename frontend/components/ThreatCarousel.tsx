@@ -12,7 +12,7 @@ interface Props {
 
 export function scrollToThreatCard(cardId: string) {
   const el = document.getElementById(`threat-card-${cardId}`);
-  el?.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
+  el?.scrollIntoView({ behavior: "smooth", inline: "center", block: "center" });
 }
 
 export default function ThreatCarousel({ cards, bulletsRefreshing = false }: Props) {
