@@ -37,7 +37,16 @@ _BANNER_DRAG_CALIB: dict[str, tuple[float, float]] = {
     "permits": (2, 8),
     "evictions": (0.5, 3),
 }
-_SECOND_DRIVER_MIN_SHARE = 0.38
+_MIN_FACTOR_PERCENTILE = 0.32
+# Hide routine 311 when another factor is clearly more notable for this address.
+_SUPPRESS_311_BELOW_PERCENTILE = 0.42
+
+_FACTOR_LABELS: dict[str, tuple[str, str, str]] = {
+    "crime": ("NYPD crime", "report", "reports"),
+    "311": ("city reports", "city report", "city reports"),
+    "permits": ("construction", "permit", "permits"),
+    "evictions": ("evictions", "filing", "filings"),
+}
 
 # v2 label bands (wellness score 0–100, higher is better).
 _LABEL_BANDS: list[tuple[int, str, str]] = [
@@ -314,26 +323,30 @@ def _volume_word(percentile: float) -> str:
     return "Little"
 
 
-def _factor_banner_line(kind: str, count: int) -> str:
-    """Qualitative label first, then the exact count (2 mi banner calibration)."""
+def _factor_percentile(kind: str, count: int) -> float:
     median, p90 = _BANNER_DRAG_CALIB[kind]
-    volume = _volume_word(
-        _percentile_from_count(count, median_count=median, p90_count=p90)
-    )
-    if kind == "311":
-        city = "city report" if count == 1 else "city reports"
-        return f"{volume} 311 reports — {_format_count(count)} {city}"
+    return _percentile_from_count(count, median_count=median, p90_count=p90)
+
+
+def _factor_banner_line(kind: str, count: int, *, percentile: float | None = None) -> str:
+    """Qualitative label first, then the exact count (2 mi banner calibration)."""
+    p = percentile if percentile is not None else _factor_percentile(kind, count)
+    volume = _volume_word(p)
+    label, singular, plural = _FACTOR_LABELS[kind]
+
     if kind == "crime":
-        word = "report" if count == 1 else "reports"
         n = _format_count(count) if count >= 10 else str(count)
-        return f"{volume} NYPD crime — {n} {word}"
-    if kind == "permits":
-        word = "permit" if count == 1 else "permits"
-        return f"{volume} construction — {count} {word}"
-    if kind == "evictions":
-        word = "filing" if count == 1 else "filings"
-        return f"{volume} evictions — {count} {word}"
-    return f"{volume} activity — {count} in area"
+        word = singular if count == 1 else plural
+        return f"{volume} {label} — {n} {word}"
+
+    if kind == "311":
+        word = singular if count == 1 else plural
+        if p < 0.58:
+            return f"City reports — {_format_count(count)} {word}"
+        return f"{volume} 311 reports — {_format_count(count)} {word}"
+
+    word = singular if count == 1 else plural
+    return f"{volume} {label} — {count} {word}"
 
 
 def _score_factor_drags(
@@ -400,42 +413,63 @@ def _cap_explanation(
     return f"Capped due to {' and '.join(notes[:2])}."
 
 
-def _banner_impacts(
+def _pick_banner_drivers(
     crime_count: int,
     reports_count: int,
     permit_count: int,
     eviction_count: int,
     extra_311_drag: float,
-) -> list[tuple[str, float, int]]:
-    """Rank score drivers for banner copy (2 mi calibration; score formula unchanged)."""
+) -> list[tuple[str, int, float]]:
+    """
+    Pick 1–2 factors that best explain this address vs typical NYC ~2 mi blocks.
+
+    Rank by how elevated each signal is for its own category (percentile), not raw
+    311 volume — so crime, construction, or evictions can lead when they stand out.
+    """
     counts = {
         "crime": crime_count,
         "311": reports_count,
         "permits": permit_count,
         "evictions": eviction_count,
     }
-    impacts: list[tuple[str, float, int]] = []
+    candidates: list[tuple[str, int, float, float]] = []
     for kind, count in counts.items():
         if count <= 0:
             continue
-        median, p90 = _BANNER_DRAG_CALIB[kind]
-        percentile = _percentile_from_count(count, median_count=median, p90_count=p90)
-        impact = _SCORE_WEIGHTS[kind] * percentile * 100.0
-        if impact >= _MIN_DRAG_TO_MENTION:
-            impacts.append((kind, impact, count))
+        percentile = _factor_percentile(kind, count)
+        if percentile < _MIN_FACTOR_PERCENTILE:
+            continue
+        tie_break = _SCORE_WEIGHTS[kind] * percentile
+        candidates.append((kind, count, percentile, tie_break))
 
-    if extra_311_drag >= _MIN_DRAG_TO_MENTION:
-        merged = False
-        for idx, (kind, impact, count) in enumerate(impacts):
-            if kind == "311":
-                impacts[idx] = (kind, impact + extra_311_drag, count)
-                merged = True
-                break
-        if not merged:
-            impacts.append(("311", extra_311_drag, reports_count))
+    if not candidates:
+        return []
 
-    impacts.sort(key=lambda row: -row[1])
-    return impacts
+    non_311 = [row for row in candidates if row[0] != "311"]
+    if non_311 and any(row[2] >= _SUPPRESS_311_BELOW_PERCENTILE for row in non_311):
+        candidates = [
+            row
+            for row in candidates
+            if not (
+                row[0] == "311"
+                and row[2] < _SUPPRESS_311_BELOW_PERCENTILE
+                and extra_311_drag < _MIN_DRAG_TO_MENTION
+            )
+        ]
+
+    if not candidates:
+        return []
+
+    candidates.sort(key=lambda row: (-row[2], -row[3]))
+    top_kind, top_count, top_p, _ = candidates[0]
+    drivers: list[tuple[str, int, float]] = [(top_kind, top_count, top_p)]
+
+    if len(candidates) > 1:
+        second_kind, second_count, second_p, _ = candidates[1]
+        if second_p >= top_p - 0.14:
+            drivers.append((second_kind, second_count, second_p))
+
+    return drivers
 
 
 def _build_risk_description(
@@ -479,7 +513,7 @@ def _build_risk_description(
         capped=capped,
     )
 
-    impacts = _banner_impacts(
+    drivers = _pick_banner_drivers(
         crime_count, reports_count, permit_count, eviction_count, extra_311_drag
     )
 
@@ -492,13 +526,16 @@ def _build_risk_description(
         capped=capped,
     )
 
-    if not impacts:
+    if not drivers:
         sentence = f"Nothing major in {mi_label}."
-    elif len(impacts) == 1 or impacts[1][1] < impacts[0][1] * _SECOND_DRIVER_MIN_SHARE:
-        kind, _, count = impacts[0]
-        sentence = f"{_factor_banner_line(kind, count)} in {mi_label}."
+    elif len(drivers) == 1:
+        kind, count, percentile = drivers[0]
+        sentence = f"{_factor_banner_line(kind, count, percentile=percentile)} in {mi_label}."
     else:
-        parts = [_factor_banner_line(kind, count) for kind, _, count in impacts[:2]]
+        parts = [
+            _factor_banner_line(kind, count, percentile=percentile)
+            for kind, count, percentile in drivers
+        ]
         sentence = f"{' and '.join(parts)} in {mi_label}."
 
     if cap_note:
