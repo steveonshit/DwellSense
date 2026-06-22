@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 # Bump this when bullet formatting / merge rules change so in-memory caches don't
 # serve stale card text across deploys.
-_ANALYSIS_CACHE_VERSION = "2026-06-20-wellness-v2"
+_ANALYSIS_CACHE_VERSION = "2026-06-22-wellness-v2b"
 
 _PENDING_BULLETS_TTL_SEC = 300
 

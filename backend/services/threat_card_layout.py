@@ -30,23 +30,24 @@ _SCORE_WEIGHTS: dict[str, float] = {
     "evictions": 0.20,
 }
 _MIN_DRAG_TO_MENTION = 4.0
-# Renter-facing lot/little labels at ~2 mi (display only; score math unchanged).
-_VOLUME_CALIB: dict[str, tuple[float, float]] = {
+# Banner-only 2 mi NYC calibration (score math uses _SCORE_CALIB unchanged).
+_BANNER_DRAG_CALIB: dict[str, tuple[float, float]] = {
     "crime": (8, 42),
-    "311": (500, 2200),
-    "permits": (1, 7),
+    "311": (900, 2800),
+    "permits": (2, 8),
     "evictions": (0.5, 3),
 }
+_SECOND_DRIVER_MIN_SHARE = 0.38
 
 # v2 label bands (wellness score 0–100, higher is better).
 _LABEL_BANDS: list[tuple[int, str, str]] = [
     (15, "EXTREME", "Terrible"),
     (28, "HIGH", "Bad"),
-    (42, "MODERATE", "Average"),
-    (55, "LOW", "Good"),
-    (68, "LOW", "Very Good"),
-    (80, "LOW", "Great"),
-    (90, "LOW", "Excellent"),
+    (48, "MODERATE", "Average"),
+    (62, "LOW", "Good"),
+    (75, "LOW", "Very Good"),
+    (83, "LOW", "Great"),
+    (92, "LOW", "Excellent"),
     (100, "LOW", "Outstanding"),
 ]
 
@@ -314,8 +315,8 @@ def _volume_word(percentile: float) -> str:
 
 
 def _factor_banner_line(kind: str, count: int) -> str:
-    """Qualitative label first, then the exact count."""
-    median, p90 = _VOLUME_CALIB[kind]
+    """Qualitative label first, then the exact count (2 mi banner calibration)."""
+    median, p90 = _BANNER_DRAG_CALIB[kind]
     volume = _volume_word(
         _percentile_from_count(count, median_count=median, p90_count=p90)
     )
@@ -399,7 +400,46 @@ def _cap_explanation(
     return f"Capped due to {' and '.join(notes[:2])}."
 
 
+def _banner_impacts(
+    crime_count: int,
+    reports_count: int,
+    permit_count: int,
+    eviction_count: int,
+    extra_311_drag: float,
+) -> list[tuple[str, float, int]]:
+    """Rank score drivers for banner copy (2 mi calibration; score formula unchanged)."""
+    counts = {
+        "crime": crime_count,
+        "311": reports_count,
+        "permits": permit_count,
+        "evictions": eviction_count,
+    }
+    impacts: list[tuple[str, float, int]] = []
+    for kind, count in counts.items():
+        if count <= 0:
+            continue
+        median, p90 = _BANNER_DRAG_CALIB[kind]
+        percentile = _percentile_from_count(count, median_count=median, p90_count=p90)
+        impact = _SCORE_WEIGHTS[kind] * percentile * 100.0
+        if impact >= _MIN_DRAG_TO_MENTION:
+            impacts.append((kind, impact, count))
+
+    if extra_311_drag >= _MIN_DRAG_TO_MENTION:
+        merged = False
+        for idx, (kind, impact, count) in enumerate(impacts):
+            if kind == "311":
+                impacts[idx] = (kind, impact + extra_311_drag, count)
+                merged = True
+                break
+        if not merged:
+            impacts.append(("311", extra_311_drag, reports_count))
+
+    impacts.sort(key=lambda row: -row[1])
+    return impacts
+
+
 def _build_risk_description(
+    wellness: int,
     crime_count: int,
     reports_count: int,
     permit_count: int,
@@ -421,9 +461,6 @@ def _build_risk_description(
     if all_clear:
         return f"No crime, 311 (city reports), evictions, or permits in {mi_label}."
 
-    drags, _ = _score_factor_drags(
-        crime_count, reports_count, permit_count, eviction_count
-    )
     score_after_base = _base_wellness_score(
         crime_count, reports_count, permit_count, eviction_count
     )
@@ -442,24 +479,9 @@ def _build_risk_description(
         capped=capped,
     )
 
-    score_drivers: list[tuple[str, float, int]] = [
-        (kind, drag, counts[kind])
-        for kind, drag in drags.items()
-        if drag >= _MIN_DRAG_TO_MENTION and counts[kind] > 0
-    ]
-    if extra_311_drag >= _MIN_DRAG_TO_MENTION:
-        score_drivers.append(("311_extra", extra_311_drag, reports_count))
-    score_drivers.sort(key=lambda row: -row[1])
-    score_drivers = [row for row in score_drivers if row[0] != "311_extra"]
-
-    def _is_notable_driver(kind: str, count: int) -> bool:
-        median, p90 = _VOLUME_CALIB[kind]
-        volume = _volume_word(
-            _percentile_from_count(count, median_count=median, p90_count=p90)
-        )
-        return volume != "Little"
-
-    notable_drivers = [row for row in score_drivers if _is_notable_driver(row[0], row[2])]
+    impacts = _banner_impacts(
+        crime_count, reports_count, permit_count, eviction_count, extra_311_drag
+    )
 
     cap_note = _cap_explanation(
         score_after_311,
@@ -470,14 +492,13 @@ def _build_risk_description(
         capped=capped,
     )
 
-    if not notable_drivers:
+    if not impacts:
         sentence = f"Nothing major in {mi_label}."
-    elif len(notable_drivers) == 1:
-        kind, _, count = notable_drivers[0]
+    elif len(impacts) == 1 or impacts[1][1] < impacts[0][1] * _SECOND_DRIVER_MIN_SHARE:
+        kind, _, count = impacts[0]
         sentence = f"{_factor_banner_line(kind, count)} in {mi_label}."
     else:
-        top = notable_drivers[:2]
-        parts = [_factor_banner_line(kind, count) for kind, _, count in top]
+        parts = [_factor_banner_line(kind, count) for kind, _, count in impacts[:2]]
         sentence = f"{' and '.join(parts)} in {mi_label}."
 
     if cap_note:
@@ -523,6 +544,7 @@ def compute_risk_from_counts(
     )
 
     risk_description = _build_risk_description(
+        wellness,
         crime_count,
         reports_count,
         permit_count,
