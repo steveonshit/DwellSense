@@ -28,10 +28,40 @@ export function flightNoiseSummary(exposure: FlightExposure): string {
   return "Flight noise here is higher than usual for NYC.";
 }
 
+export type FlightComparisonTier = "below" | "average" | "above";
+
+/** NYC-relative tier from combined (or peak) flight exposure percentile. */
+export function flightComparisonTier(exposure: FlightExposure): FlightComparisonTier {
+  const p =
+    exposure.combined_percentile ??
+    Math.max(exposure.night_percentile ?? 0, exposure.day_percentile ?? 0);
+  if (p >= 0.54) return "above";
+  if (p >= 0.42) return "average";
+  return "below";
+}
+
 export function flightElevationBadge(exposure: FlightExposure): string {
-  return exposure.elevation_level === "high"
-    ? "Well above NYC average"
-    : "Above NYC average";
+  const tier = flightComparisonTier(exposure);
+  if (tier === "above") {
+    return exposure.elevation_level === "high"
+      ? "Well above NYC average"
+      : "Above NYC average";
+  }
+  if (tier === "average") return "Around NYC average";
+  return "Below NYC average";
+}
+
+export function flightElevationBadgeClasses(exposure: FlightExposure): string {
+  const tier = flightComparisonTier(exposure);
+  if (tier === "above") {
+    return exposure.elevation_level === "high"
+      ? "bg-rose-950/50 border-rose-600 text-rose-200"
+      : "bg-amber-950/50 border-amber-500 text-amber-200";
+  }
+  if (tier === "average") {
+    return "bg-slate-800/80 border-slate-500 text-slate-300";
+  }
+  return "bg-emerald-950/40 border-emerald-600 text-emerald-200";
 }
 
 /** Short note about altitude when flights are low enough to hear. */

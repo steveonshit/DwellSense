@@ -7,6 +7,7 @@ import { flightPathToLineLngLat, flightPathToRouteLatLng, filterFlightPathsWithi
 import {
   flightAltitudeNote,
   flightElevationBadge,
+  flightElevationBadgeClasses,
   flightFrequencyLabel,
   flightNoiseSummary,
   formatObservationWindow,
@@ -759,9 +760,7 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
             <span
               className={[
                 "px-2 py-0.5 rounded-full border text-[11px] md:text-xs font-bold shrink-0",
-                flightExposure.elevation_level === "high"
-                  ? "bg-rose-950/50 border-rose-600 text-rose-200"
-                  : "bg-cyan-950/40 border-cyan-600 text-cyan-200",
+                flightElevationBadgeClasses(flightExposure),
               ].join(" ")}
               title="Compared to typical plane traffic within ~2 mi across NYC"
             >
