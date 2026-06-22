@@ -13,6 +13,7 @@ export default function LoadingAd({ onComplete, isApiReady }: Props) {
   const [secondsLeft, setSecondsLeft] = useState(AD_DURATION);
   const [showSkip, setShowSkip] = useState(false);
   const [skipped, setSkipped] = useState(false);
+  const [progressPct, setProgressPct] = useState(0);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const hasCompleted = useRef(false);
 
@@ -24,11 +25,15 @@ export default function LoadingAd({ onComplete, isApiReady }: Props) {
   };
 
   useEffect(() => {
+    // One smooth 7s fill — matches the countdown duration exactly
+    const frame = requestAnimationFrame(() => setProgressPct(100));
+
     intervalRef.current = setInterval(() => {
       setSecondsLeft((s) => (s <= 1 ? 0 : s - 1));
     }, 1000);
 
     return () => {
+      cancelAnimationFrame(frame);
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -38,6 +43,7 @@ export default function LoadingAd({ onComplete, isApiReady }: Props) {
   useEffect(() => {
     if (secondsLeft === 0) {
       setShowSkip(true);
+      setProgressPct(100);
       if (isApiReady) complete();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -56,8 +62,6 @@ export default function LoadingAd({ onComplete, isApiReady }: Props) {
     if (skipped && isApiReady) complete();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [skipped, isApiReady]);
-
-  const progressPct = ((AD_DURATION - secondsLeft) / AD_DURATION) * 100;
 
   return (
     <div className="w-full max-w-4xl bg-slate-900 border border-slate-700 rounded-3xl overflow-hidden shadow-2xl mt-4 relative fade-in">
@@ -126,8 +130,11 @@ export default function LoadingAd({ onComplete, isApiReady }: Props) {
       {/* Progress bar */}
       <div className="w-full h-1 bg-slate-800">
         <div
-          className="h-full bg-rose-500 shadow-[0_0_10px_rgba(225,29,72,0.8)] transition-all"
-          style={{ width: `${progressPct}%`, transition: "width 1s linear" }}
+          className="h-full bg-rose-500 shadow-[0_0_10px_rgba(225,29,72,0.8)]"
+          style={{
+            width: `${progressPct}%`,
+            transition: `width ${AD_DURATION}s linear`,
+          }}
         />
       </div>
     </div>
