@@ -734,9 +734,12 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
   return (
     <div className="w-full bg-slate-800 rounded-3xl border border-slate-700 shadow-2xl p-4 fade-in" style={{ animationDelay: "0.2s" }}>
       <div className="flex justify-between items-center mb-4 px-2">
-        <h3 className="text-white font-black uppercase tracking-widest text-sm flex items-center gap-2">
-          🗺️ Live Threat Density Map{" "}
-          <span className="text-rose-500 animate-pulse">● Live Swarm</span>
+        <h3 className="text-white font-black uppercase tracking-widest text-base md:text-lg flex items-center gap-2.5">
+          <span className="text-xl md:text-2xl leading-none" aria-hidden>
+            🗺️
+          </span>
+          Live Threat Density Map{" "}
+          <span className="text-rose-500 animate-pulse text-base md:text-lg">● Live Swarm</span>
         </h3>
         <span className="text-slate-400 text-[10px] font-bold bg-slate-900 px-3 py-1 rounded-full border border-slate-700 italic hidden md:block">
           {mapData.swarm_location_total != null && mapData.swarm_location_total > mapData.swarm.length
@@ -748,7 +751,7 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
 
       <div
         ref={containerRef}
-        className="w-full h-[450px] md:h-[600px] rounded-2xl border border-slate-800 overflow-hidden"
+        className="w-full h-[520px] md:h-[720px] rounded-2xl border border-slate-800 overflow-hidden"
       />
 
       {showFlightFeature && flightExposure && (
