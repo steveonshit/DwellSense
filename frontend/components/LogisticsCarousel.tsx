@@ -18,8 +18,8 @@ export default function LogisticsCarousel({ cards, onHoverCard }: Props) {
   return (
     <div className="fade-in w-full" style={{ animationDelay: "0.1s" }}>
       <div className="flex justify-between items-center mb-1 px-2 gap-3">
-        <h3 className="text-white font-black uppercase tracking-widest text-sm md:text-base flex items-center gap-2 shrink-0">
-          <span className="text-xl md:text-2xl leading-none" aria-hidden>
+        <h3 className="text-white font-black uppercase tracking-widest text-sm md:text-base flex items-center gap-2.5 shrink-0">
+          <span className="text-2xl md:text-3xl leading-none" aria-hidden>
             📍
           </span>
           Transit, Grocery &amp; Dining Proximity
@@ -38,7 +38,7 @@ export default function LogisticsCarousel({ cards, onHoverCard }: Props) {
         {cards.map((card, i) => (
           <div
             key={card.type + i}
-            className="logistics-card bg-[#1e293b] border border-slate-700/50 p-2.5 md:p-3 rounded-2xl shadow-lg hover-card hover:bg-slate-700 group transition-colors"
+            className="logistics-card bg-[#1e293b] border border-slate-700/50 p-3 md:p-3.5 rounded-2xl shadow-lg hover-card hover:bg-slate-700 group transition-colors"
             style={{ borderColor: "transparent" }}
             onMouseEnter={(e) => {
               (e.currentTarget as HTMLElement).style.borderColor = card.color;
@@ -49,9 +49,9 @@ export default function LogisticsCarousel({ cards, onHoverCard }: Props) {
               onHoverCard(null);
             }}
           >
-            <div className="flex items-center gap-2 overflow-hidden flex-1 pr-1">
+            <div className="flex items-center gap-2.5 overflow-hidden flex-1 pr-1">
               <div
-                className="w-12 h-12 md:w-14 md:h-14 bg-[#0f172a] rounded-xl border border-slate-700/60 flex items-center justify-center text-2xl md:text-3xl shrink-0 shadow-inner transition-colors"
+                className="w-14 h-14 md:w-16 md:h-16 bg-[#0f172a] rounded-xl border border-slate-700/60 flex items-center justify-center text-3xl md:text-4xl leading-none shrink-0 shadow-inner transition-colors"
                 style={{ "--hover-border": card.color } as React.CSSProperties}
               >
                 {card.emoji}
