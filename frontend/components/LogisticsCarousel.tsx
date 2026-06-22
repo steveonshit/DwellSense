@@ -19,7 +19,10 @@ export default function LogisticsCarousel({ cards, onHoverCard }: Props) {
     <div className="fade-in w-full" style={{ animationDelay: "0.1s" }}>
       <div className="flex justify-between items-center mb-1 px-2 gap-3">
         <h3 className="text-white font-black uppercase tracking-widest text-sm md:text-base flex items-center gap-2 shrink-0">
-          📍 Transit, Grocery &amp; Dining Proximity
+          <span className="text-xl md:text-2xl leading-none" aria-hidden>
+            📍
+          </span>
+          Transit, Grocery &amp; Dining Proximity
         </h3>
         <div className="flex items-center min-w-0">
           <CarouselDots
@@ -48,7 +51,7 @@ export default function LogisticsCarousel({ cards, onHoverCard }: Props) {
           >
             <div className="flex items-center gap-2 overflow-hidden flex-1 pr-1">
               <div
-                className="w-10 h-10 md:w-11 md:h-11 bg-[#0f172a] rounded-xl border border-slate-700/60 flex items-center justify-center text-xl shrink-0 shadow-inner transition-colors"
+                className="w-12 h-12 md:w-14 md:h-14 bg-[#0f172a] rounded-xl border border-slate-700/60 flex items-center justify-center text-2xl md:text-3xl shrink-0 shadow-inner transition-colors"
                 style={{ "--hover-border": card.color } as React.CSSProperties}
               >
                 {card.emoji}
