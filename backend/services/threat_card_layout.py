@@ -33,7 +33,7 @@ _MIN_DRAG_TO_MENTION = 4.0
 # Banner-only 2 mi NYC calibration (score math uses _SCORE_CALIB unchanged).
 _BANNER_DRAG_CALIB: dict[str, tuple[float, float]] = {
     "crime": (8, 42),
-    "311": (900, 2800),
+    "311": (2000, 4000),
     "permits": (2, 8),
     "evictions": (0.5, 3),
 }
