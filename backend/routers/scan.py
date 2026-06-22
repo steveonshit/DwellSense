@@ -111,8 +111,13 @@ async def scan(request: ScanRequest):
     permits = city_data.filter_rows_within_radius(coord, permits)
     evictions = city_data.filter_rows_within_radius(coord, evictions)
 
-    # ── 3. Flight corridors (ADS-B or static) ────────────────────────────────
-    flight_paths = await flights.get_flight_paths(coord, limit=3)
+    # ── 3. Flight exposure + paths (paths only when exposure is elevated) ─────
+    exposure_task = asyncio.to_thread(flight_exposure.compute_exposure, coord)
+    flight_paths_task = flights.get_flight_paths(coord, limit=3)
+    exposure, flight_paths_raw = await asyncio.gather(exposure_task, flight_paths_task)
+
+    show_flight = bool(exposure and exposure.show_flight_feature)
+    flight_paths = flight_paths_raw if show_flight else []
     flight_path = flight_paths[0] if flight_paths else None
 
     # ── 4. Build map data ────────────────────────────────────────────────────
@@ -139,6 +144,7 @@ async def scan(request: ScanRequest):
         evictions=evictions,
         logistics=logistics,
         flight_path=flight_path,
+        flight_exposure=exposure,
         crime_capped=crime_capped,
         reports_capped=reports_capped,
         permits_capped=permits_capped,
@@ -189,7 +195,7 @@ async def scan(request: ScanRequest):
         dining=dining,
         threat_cards=threat_cards,
         map_data=map_data,
-        flight_exposure=flight_exposure.compute_exposure(coord),
+        flight_exposure=exposure,
         gemini_configured=bool(ai_result.get("gemini_configured", False)),
         gemini_status=ai_result.get("gemini_status"),
         gemini_latency_ms=ai_result.get("gemini_latency_ms"),

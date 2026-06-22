@@ -6,6 +6,9 @@ export interface ScanSummaryProps {
   swarmTotal: number | null;
   scanRadiusMi: number;
   flightPathCount: number;
+  showFlightFeature?: boolean;
+  flightElevation?: string | null;
+  threatCardCount?: number;
 }
 
 interface Props {
@@ -63,13 +66,28 @@ export default function SideAds({ summary }: Props) {
                   <span className="text-slate-500"> ({summary.scanRadiusMi}-mi)</span>
                 </p>
                 <p>
-                  Flights:{" "}
-                  <span className="text-cyan-300">{summary.flightPathCount}</span>{" "}
-                  <span className="text-slate-500">ADS-B path(s)</span>
+                  {summary.showFlightFeature ? (
+                    <>
+                      Flight noise:{" "}
+                      <span className="text-cyan-300 capitalize">
+                        {summary.flightElevation ?? "elevated"}
+                      </span>
+                      {summary.flightPathCount > 0 ? (
+                        <span className="text-slate-500">
+                          {" "}
+                          · {summary.flightPathCount} track(s) on map
+                        </span>
+                      ) : null}
+                    </>
+                  ) : (
+                    <span className="text-slate-500">
+                      Flight noise: typical for NYC (not shown)
+                    </span>
+                  )}
                 </p>
               </div>
               <p className="mt-auto text-[9px] text-slate-500 leading-snug border-t border-slate-700/80 pt-3">
-                Swipe the threat carousel below — 9 cards total.
+                Swipe the threat carousel below — {summary.threatCardCount ?? 9} cards total.
               </p>
             </div>
           </div>

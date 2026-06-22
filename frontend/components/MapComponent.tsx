@@ -98,6 +98,7 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
   const scanRadiusLabel = Number.isInteger(scanRadiusMi)
     ? `${scanRadiusMi}-mi`
     : `${scanRadiusMi.toFixed(1)}-mi`;
+  const showFlightFeature = Boolean(flightExposure?.show_flight_feature);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
@@ -268,7 +269,7 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
 
     apply();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mapData.flight_path, mapData.flight_paths]);
+  }, [mapData.flight_path, mapData.flight_paths, showFlightFeature]);
 
   // ── Recenter map when the scanned property moves ────────────────────────────
   useEffect(() => {
@@ -299,6 +300,7 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
   // ── Helpers ─────────────────────────────────────────────────────────────────
 
   const getFlightPaths = () => {
+    if (!showFlightFeature) return [];
     const raw = mapData.flight_paths?.filter(Boolean) ?? [];
     const paths = raw.length
       ? raw
@@ -751,60 +753,71 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
         className="w-full h-[450px] md:h-[600px] rounded-2xl border border-slate-800 overflow-hidden"
       />
 
-      <div className="mt-3 px-2 text-[10px] md:text-[11px] font-bold text-slate-400">
-          <div className="flex items-center justify-between gap-3">
+      {showFlightFeature && flightExposure && (
+        <div className="mt-3 px-2 text-[10px] md:text-[11px] font-bold text-slate-400">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
             <div className="text-slate-200 font-black uppercase tracking-widest text-[11px]">
-              ✈️ Flight Activity
+              ✈️ Flight Noise Exposure
             </div>
-            <div className="text-slate-500">
-              Paths: <span className="text-cyan-300">{getFlightPaths().length}</span>
+            <div className="flex flex-wrap items-center gap-2">
+              <span
+                className={[
+                  "px-2 py-1 rounded-full border text-[10px] font-black uppercase tracking-wide",
+                  flightExposure.elevation_level === "high"
+                    ? "bg-rose-950/50 border-rose-600 text-rose-200"
+                    : "bg-cyan-950/40 border-cyan-600 text-cyan-200",
+                ].join(" ")}
+              >
+                {flightExposure.elevation_level === "high" ? "High" : "Elevated"} vs NYC
+              </span>
+              {showFlightFeature && getFlightPaths().length > 0 && (
+                <span className="text-slate-500">
+                  Tracks: <span className="text-cyan-300">{getFlightPaths().length}</span>
+                </span>
+              )}
             </div>
           </div>
 
-          {getFlightPaths().length === 0 && (
-            <p className="mt-2 text-slate-500 font-semibold leading-snug max-w-3xl">
-              No ADS-B flight tracks in stored samples within {scanRadiusLabel} of this address.
-              {flightExposure?.data_quality === "unavailable"
-                ? " Exposure stats need ingested aircraft data — this is not a map error."
-                : " Aircraft may still pass outside the scan radius or below our altitude filter."}
+          {flightExposure.headline && (
+            <p className="mt-2 text-slate-200 font-semibold leading-snug max-w-3xl">
+              {flightExposure.headline}
+            </p>
+          )}
+          {flightExposure.detail && (
+            <p className="mt-1 text-slate-500 font-semibold leading-snug max-w-3xl">
+              {flightExposure.detail}
             </p>
           )}
 
-          {flightExposure && (
+          {flightExposure.data_quality !== "unavailable" && (
             <div className="mt-2 flex flex-wrap items-center gap-2">
-              {flightExposure.data_quality !== "unavailable" ? (
-                <>
-                  <span className="px-2 py-1 rounded-full bg-slate-900 border border-slate-700 text-slate-300">
-                    Night: <span className="text-white">{flightExposure.night_overflights_per_hour}/hr</span>
-                  </span>
-                  <span className="px-2 py-1 rounded-full bg-slate-900 border border-slate-700 text-slate-300">
-                    Day: <span className="text-white">{flightExposure.day_overflights_per_hour}/hr</span>
-                  </span>
-                  {flightExposure.typical_altitude_ft != null && (
-                    <span className="px-2 py-1 rounded-full bg-slate-900 border border-slate-700 text-slate-300">
-                      Typical: <span className="text-white">~{flightExposure.typical_altitude_ft.toLocaleString()} ft</span>
-                    </span>
-                  )}
-                  <span
-                    className={[
-                      "px-2 py-1 rounded-full border text-slate-200",
-                      flightExposure.data_quality === "good"
-                        ? "bg-emerald-950/40 border-emerald-700 text-emerald-200"
-                        : "bg-amber-950/40 border-amber-700 text-amber-200",
-                    ].join(" ")}
-                  >
-                    Data: <span className="text-white">{flightExposure.data_quality}</span>
-                  </span>
-                </>
-              ) : (
+              <span className="px-2 py-1 rounded-full bg-slate-900 border border-slate-700 text-slate-300">
+                Night (10 PM–7 AM):{" "}
+                <span className="text-white">{flightExposure.night_overflights_per_hour}/hr</span>
+              </span>
+              <span className="px-2 py-1 rounded-full bg-slate-900 border border-slate-700 text-slate-300">
+                Day: <span className="text-white">{flightExposure.day_overflights_per_hour}/hr</span>
+              </span>
+              {flightExposure.typical_altitude_ft != null && (
                 <span className="px-2 py-1 rounded-full bg-slate-900 border border-slate-700 text-slate-300">
-                  Exposure: <span className="text-white">unavailable</span>
+                  Median alt:{" "}
+                  <span className="text-white">
+                    ~{flightExposure.typical_altitude_ft.toLocaleString()} ft
+                  </span>
+                </span>
+              )}
+              {flightExposure.combined_percentile != null && (
+                <span className="px-2 py-1 rounded-full bg-slate-900 border border-slate-700 text-slate-400">
+                  NYC percentile:{" "}
+                  <span className="text-cyan-300">
+                    {Math.round(flightExposure.combined_percentile * 100)}th
+                  </span>
                 </span>
               )}
             </div>
           )}
 
-          {getFlightPaths().length > 0 && (
+          {showFlightFeature && getFlightPaths().length > 0 && (
             <div className="mt-2 flex gap-2 overflow-x-auto pb-1">
               {getFlightPaths().slice(0, 3).map((p, idx) => (
                 <div
@@ -826,7 +839,15 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
               ))}
             </div>
           )}
+
+          {getFlightPaths().length === 0 && (
+            <p className="mt-2 text-slate-500 font-semibold leading-snug max-w-3xl">
+              Exposure is elevated from stored ADS-B samples; map tracks appear when recent paths cross
+              within {scanRadiusLabel}.
+            </p>
+          )}
         </div>
+      )}
 
       <div className="flex flex-wrap justify-center sm:justify-start gap-x-4 gap-y-2 mt-4 px-2 text-[10px] md:text-[11px] font-bold text-slate-300">
         <span className="flex items-center gap-1"><span className="text-rose-500 text-lg">📍</span> Property</span>
@@ -840,7 +861,7 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
         <span className="flex items-center gap-1">🚧 Permits</span>
         <span className="flex items-center gap-1 text-emerald-400">🚇 Transit</span>
         <span className="flex items-center gap-1 text-amber-400">✈️ Airport</span>
-        {getFlightPaths().length > 0 && (
+        {showFlightFeature && getFlightPaths().length > 0 && (
           <span className="flex items-center gap-1">
             <span className="w-6 h-1 bg-cyan-500 border-y border-dashed border-cyan-200 inline-block" /> Flight Route
           </span>

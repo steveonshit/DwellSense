@@ -103,6 +103,17 @@ class FlightExposure(BaseModel):
     trend: Literal["stable", "variable"] | None = None
     # "good" when we have consistent sampling; "sparse" when gaps are common.
     data_quality: Literal["good", "sparse", "unavailable"]
+    # True only when exposure is materially above NYC baselines (show map + card).
+    show_flight_feature: bool = False
+    elevation_level: Literal["typical", "elevated", "high", "unavailable"] = "unavailable"
+    night_percentile: float | None = None
+    day_percentile: float | None = None
+    combined_percentile: float | None = None
+    headline: str | None = None
+    detail: str | None = None
+    observation_days: int | None = None
+    radius_miles: float | None = None
+    sample_count: int = 0
 
 
 class MapData(BaseModel):

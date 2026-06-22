@@ -7,6 +7,9 @@
     "app/api/scan/route.ts": {
       "maxDuration": 300
     },
+    "app/api/scan/bullets/route.ts": {
+      "maxDuration": 300
+    },
     "app/api/pdf/route.ts": {
       "maxDuration": 300
     }

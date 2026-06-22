@@ -13,12 +13,13 @@ import logging
 from dataclasses import dataclass
 import google.generativeai as genai
 from google.api_core import exceptions as google_exceptions
-from models.schemas import Coordinate, FlightPath, LogisticsCard
+from models.schemas import Coordinate, FlightPath, FlightExposure, LogisticsCard
 from services import city_data
 from services.threat_card_layout import (
     CardChromeContext,
     cards_from_specs_and_bullets,
     compute_risk_from_counts,
+    filter_threat_cards_for_exposure,
     ordered_card_ids,
 )
 
@@ -26,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 # Bump this when bullet formatting / merge rules change so in-memory caches don't
 # serve stale card text across deploys.
-_ANALYSIS_CACHE_VERSION = "2026-06-22-wellness-v2e"
+_ANALYSIS_CACHE_VERSION = "2026-06-22-flight-exposure-v1"
 
 _PENDING_BULLETS_TTL_SEC = 300
 
@@ -155,6 +156,7 @@ class PendingBulletsContext:
     evictions: list[dict]
     logistics: list[LogisticsCard]
     flight_path: FlightPath | None
+    flight_exposure: FlightExposure | None
     crime_count: int
     reports_count: int
     permit_count: int
@@ -169,6 +171,16 @@ class PendingBulletsContext:
 
 
 _pending_bullets: dict[str, tuple[float, PendingBulletsContext]] = {}
+
+
+def _visible_threat_cards(
+    bullets_by_id: dict[str, list[str]],
+    chrome: CardChromeContext,
+) -> list[dict]:
+    cards = cards_from_specs_and_bullets(bullets_by_id, chrome)
+    return filter_threat_cards_for_exposure(
+        cards, show_flight_feature=chrome.show_flight_feature
+    )
 
 
 def _purge_expired_pending() -> None:
@@ -414,6 +426,7 @@ def _apply_no_recent_reports_bottom_line(
     noise_count: int,
     construction_311_count: int,
     flight_path: FlightPath | None,
+    flight_exposure: FlightExposure | None,
     scan_radius_miles: float,
 ) -> dict[str, list[str]]:
     """
@@ -446,7 +459,7 @@ def _apply_no_recent_reports_bottom_line(
     _set("noise_schedule", noise_count > 0)
     _set("demolitions", permit_count > 0 or construction_311_count > 0)
     _set("high_churn", eviction_count > 0)
-    _set("flight_path", flight_path is not None)
+    _set("flight_path", bool(flight_exposure and flight_exposure.show_flight_feature))
 
     return out
 
@@ -546,6 +559,7 @@ def _enforce_fact_locked_bullets(
     noise_count: int,
     construction_311_count: int,
     flight_path: FlightPath | None,
+    flight_exposure: FlightExposure | None,
     scan_radius_miles: float,
 ) -> dict[str, list[str]]:
     """
@@ -651,11 +665,24 @@ def _enforce_fact_locked_bullets(
             out.get("noise_schedule", ["", "", ""])[2] or "",
         ]
 
-    # 7. FLIGHT PATH — only paths inside scan radius are returned to the client.
-    if flight_path is None:
+    # 7. FLIGHT NOISE — only when address-relative exposure is above NYC baselines.
+    if not flight_exposure or not flight_exposure.show_flight_feature:
+        out["flight_path"] = ["", "", ""]
+    elif flight_exposure.headline:
+        third = (
+            "Cyan lines on the map show recent ADS-B tracks within the scan radius."
+            if flight_path is not None
+            else "Exposure is elevated; map tracks appear when ADS-B samples are available."
+        )
         out["flight_path"] = [
-            f"No aircraft tracks within ~{r:g} miles of this address.",
-            "Flight lines appear only when ADS-B passed the scan radius.",
+            flight_exposure.headline,
+            flight_exposure.detail or "Based on stored ADS-B samples for NYC.",
+            third,
+        ]
+    elif flight_path is None:
+        out["flight_path"] = [
+            f"Elevated aircraft exposure within ~{r:g} miles.",
+            "Flight noise is above typical NYC levels for this radius.",
             _bottom("flight_path"),
         ]
     else:
@@ -665,7 +692,7 @@ def _enforce_fact_locked_bullets(
         closest = flight_path.closest_miles
         closest_txt = f" (closest {closest:.1f} mi)" if closest is not None else ""
         out["flight_path"] = [
-            f"Flight activity within ~{r:g} mi{closest_txt}: {label}",
+            f"Elevated flight exposure within ~{r:g} mi{closest_txt}: {label}",
             "Cyan lines on the map are real ADS-B tracks within the scan radius.",
             out.get("flight_path", ["", "", ""])[2] or "",
         ]
@@ -704,6 +731,7 @@ def _finalize_threat_bullets(
     noise_count: int,
     construction_311_count: int,
     flight_path: FlightPath | None,
+    flight_exposure: FlightExposure | None,
     scan_radius_miles: float,
 ) -> dict[str, list[str]]:
     stepped = _apply_no_recent_reports_bottom_line(
@@ -715,6 +743,7 @@ def _finalize_threat_bullets(
         noise_count=noise_count,
         construction_311_count=construction_311_count,
         flight_path=flight_path,
+        flight_exposure=flight_exposure,
         scan_radius_miles=scan_radius_miles,
     )
     return _enforce_fact_locked_bullets(
@@ -726,6 +755,7 @@ def _finalize_threat_bullets(
         noise_count=noise_count,
         construction_311_count=construction_311_count,
         flight_path=flight_path,
+        flight_exposure=flight_exposure,
         scan_radius_miles=scan_radius_miles,
     )
 
@@ -739,6 +769,7 @@ def _card_chrome_ctx(
     noise_count: int,
     construction_311_count: int,
     flight_path: FlightPath | None,
+    show_flight_feature: bool,
 ) -> CardChromeContext:
     return CardChromeContext(
         crime_count=crime_count,
@@ -747,7 +778,8 @@ def _card_chrome_ctx(
         eviction_count=eviction_count,
         noise_count=noise_count,
         construction_311_count=construction_311_count,
-        has_flight_path=flight_path is not None,
+        has_flight_path=bool(flight_path) and show_flight_feature,
+        show_flight_feature=show_flight_feature,
     )
 
 
@@ -772,11 +804,12 @@ async def _run_gemini_bullets(ctx: PendingBulletsContext) -> dict:
             noise_count=ctx.noise_count,
             construction_311_count=ctx.construction_311_count,
             flight_path=ctx.flight_path,
+            flight_exposure=ctx.flight_exposure,
             scan_radius_miles=ctx.scan_radius_miles,
         )
         return {
             **ctx.risk,
-            "threat_cards": cards_from_specs_and_bullets(fb, ctx.chrome_ctx),
+            "threat_cards": _visible_threat_cards(fb, ctx.chrome_ctx),
             **_gemini_meta(configured=False, status="no_key" if not raw_gemini_env else "placeholder"),
         }
 
@@ -792,11 +825,12 @@ async def _run_gemini_bullets(ctx: PendingBulletsContext) -> dict:
         ),
     )
 
-    flight_text = (
-        f"Flight path: {ctx.flight_path.label}"
-        if ctx.flight_path
-        else "No major flight corridor detected near this address."
-    )
+    if ctx.flight_exposure and ctx.flight_exposure.show_flight_feature:
+        flight_text = ctx.flight_exposure.headline or "Elevated flight noise vs typical NYC blocks."
+    elif ctx.flight_path:
+        flight_text = f"Flight path: {ctx.flight_path.label}"
+    else:
+        flight_text = "Flight exposure typical for NYC (card omitted)."
 
     prompt = (
         "ADDRESS: " + ctx.address + "\n"
@@ -844,6 +878,7 @@ async def _run_gemini_bullets(ctx: PendingBulletsContext) -> dict:
             noise_count=ctx.noise_count,
             construction_311_count=ctx.construction_311_count,
             flight_path=ctx.flight_path,
+            flight_exposure=ctx.flight_exposure,
             scan_radius_miles=ctx.scan_radius_miles,
         )
 
@@ -854,7 +889,7 @@ async def _run_gemini_bullets(ctx: PendingBulletsContext) -> dict:
             latency_ms = int((time.monotonic() - t0) * 1000)
             return {
                 **ctx.risk,
-                "threat_cards": cards_from_specs_and_bullets(bullets_by_id, ctx.chrome_ctx),
+                "threat_cards": _visible_threat_cards(bullets_by_id, ctx.chrome_ctx),
                 **_gemini_meta(configured=True, status="ok", latency_ms=latency_ms),
             }
         except asyncio.TimeoutError:
@@ -866,7 +901,7 @@ async def _run_gemini_bullets(ctx: PendingBulletsContext) -> dict:
             )
             return {
                 **ctx.risk,
-                "threat_cards": cards_from_specs_and_bullets(ctx.template_fb, ctx.chrome_ctx),
+                "threat_cards": _visible_threat_cards(ctx.template_fb, ctx.chrome_ctx),
                 **_gemini_meta(configured=True, status="timeout", latency_ms=latency_ms),
             }
         except Exception as e:
@@ -883,7 +918,7 @@ async def _run_gemini_bullets(ctx: PendingBulletsContext) -> dict:
             )
             return {
                 **ctx.risk,
-                "threat_cards": cards_from_specs_and_bullets(ctx.template_fb, ctx.chrome_ctx),
+                "threat_cards": _visible_threat_cards(ctx.template_fb, ctx.chrome_ctx),
                 **_gemini_meta(
                     configured=True,
                     status="error",
@@ -895,7 +930,7 @@ async def _run_gemini_bullets(ctx: PendingBulletsContext) -> dict:
 
     return {
         **ctx.risk,
-        "threat_cards": cards_from_specs_and_bullets(ctx.template_fb, ctx.chrome_ctx),
+        "threat_cards": _visible_threat_cards(ctx.template_fb, ctx.chrome_ctx),
         **_gemini_meta(configured=True, status="error"),
     }
 
@@ -932,6 +967,7 @@ async def analyze(
     evictions: list[dict],
     logistics: list[LogisticsCard],
     flight_path: FlightPath | None,
+    flight_exposure: FlightExposure | None,
     *,
     crime_capped: bool = False,
     reports_capped: bool = False,
@@ -950,6 +986,7 @@ async def analyze(
     noise_count = _count_311_noise(reports_311)
     construction_311_count = _count_311_construction(reports_311)
     scan_radius_miles = city_data.get_scan_radius_miles()
+    show_flight = bool(flight_exposure and flight_exposure.show_flight_feature)
     chrome_ctx = _card_chrome_ctx(
         crime_count=crime_count,
         reports_count=reports_count,
@@ -957,7 +994,8 @@ async def analyze(
         eviction_count=eviction_count,
         noise_count=noise_count,
         construction_311_count=construction_311_count,
-        flight_path=flight_path,
+        flight_path=flight_path if show_flight else None,
+        show_flight_feature=show_flight,
     )
 
     raw_gemini_env = (os.getenv("GEMINI_API_KEY") or "").strip()
@@ -977,9 +1015,15 @@ async def analyze(
         _pre_status = None  # will be set after the Gemini call
 
     key_fp = hashlib.md5(gemini_api_key.encode()).hexdigest()[:12] if gemini_api_key else "none"
+    fx = flight_exposure
+    fx_tag = (
+        f"fx{int(fx.show_flight_feature)}:{fx.combined_percentile or 0}:"
+        if fx
+        else "fx0:"
+    )
     cache_key = hashlib.md5(
         f"{_ANALYSIS_CACHE_VERSION}:{address}:{crime_count}:{reports_count}:{permit_count}:{eviction_count}:"
-        f"n{noise_count}c{construction_311_count}:"
+        f"n{noise_count}c{construction_311_count}:{fx_tag}"
         f"c{int(crime_capped)}r{int(reports_capped)}p{int(permits_capped)}e{int(evictions_capped)}:{key_fp}".encode()
     ).hexdigest()
     if cache_key in _analysis_cache:
@@ -1021,12 +1065,13 @@ async def analyze(
             eviction_count=eviction_count,
             noise_count=noise_count,
             construction_311_count=construction_311_count,
-            flight_path=flight_path,
+            flight_path=flight_path if show_flight else None,
+            flight_exposure=flight_exposure,
             scan_radius_miles=scan_radius_miles,
         )
         result = {
             **risk,
-            "threat_cards": cards_from_specs_and_bullets(fb, chrome_ctx),
+            "threat_cards": _visible_threat_cards(fb, chrome_ctx),
             **_gemini_meta(configured=False, status=_pre_status),
         }
         _analysis_cache[cache_key] = result
@@ -1043,7 +1088,8 @@ async def analyze(
         eviction_count=eviction_count,
         noise_count=noise_count,
         construction_311_count=construction_311_count,
-        flight_path=flight_path,
+        flight_path=flight_path if show_flight else None,
+        flight_exposure=flight_exposure,
         scan_radius_miles=scan_radius_miles,
     )
 
@@ -1055,7 +1101,8 @@ async def analyze(
         permits=permits,
         evictions=evictions,
         logistics=logistics,
-        flight_path=flight_path,
+        flight_path=flight_path if show_flight else None,
+        flight_exposure=flight_exposure,
         crime_count=crime_count,
         reports_count=reports_count,
         permit_count=permit_count,
@@ -1073,7 +1120,7 @@ async def analyze(
         bullets_token = _store_pending(pending_ctx)
         result = {
             **risk,
-            "threat_cards": cards_from_specs_and_bullets(template_fb, chrome_ctx),
+            "threat_cards": _visible_threat_cards(template_fb, chrome_ctx),
             "bullets_token": bullets_token,
             **_gemini_meta(configured=True, status="pending"),
         }

@@ -90,6 +90,17 @@ export interface FlightExposure {
   typical_altitude_ft?: number | null;
   trend?: "stable" | "variable" | null;
   data_quality: "good" | "sparse" | "unavailable";
+  /** True when exposure is materially above NYC baselines — show map lines + threat card. */
+  show_flight_feature?: boolean;
+  elevation_level?: "typical" | "elevated" | "high" | "unavailable";
+  night_percentile?: number | null;
+  day_percentile?: number | null;
+  combined_percentile?: number | null;
+  headline?: string | null;
+  detail?: string | null;
+  observation_days?: number | null;
+  radius_miles?: number | null;
+  sample_count?: number;
 }
 
 export interface MapData {

@@ -122,8 +122,8 @@ CARD_SPECS: list[dict[str, Any]] = [
     {
         "id": "flight_path",
         "emoji": "✈️",
-        "title": "FLIGHT PATH",
-        "subtitle": "ADS-B aircraft tracks within the scan radius.",
+        "title": "FLIGHT NOISE",
+        "subtitle": "Aircraft exposure vs typical NYC blocks (ADS-B).",
         "border_color": "#06b6d4",
         "text_color": "#67e8f9",
     },
@@ -150,6 +150,17 @@ def ordered_card_ids() -> list[str]:
     return [c["id"] for c in CARD_SPECS]
 
 
+def filter_threat_cards_for_exposure(
+    cards: list[dict[str, Any]],
+    *,
+    show_flight_feature: bool,
+) -> list[dict[str, Any]]:
+    """Hide the flight card when exposure is typical for NYC (not renter-actionable)."""
+    if show_flight_feature:
+        return cards
+    return [c for c in cards if c.get("id") != "flight_path"]
+
+
 @dataclass(frozen=True)
 class CardChromeContext:
     crime_count: int = 0
@@ -159,6 +170,7 @@ class CardChromeContext:
     noise_count: int = 0
     construction_311_count: int = 0
     has_flight_path: bool = False
+    show_flight_feature: bool = False
 
 
 def resolve_card_colors(card_id: str, ctx: CardChromeContext) -> tuple[str, str]:
@@ -189,7 +201,9 @@ def resolve_card_colors(card_id: str, ctx: CardChromeContext) -> tuple[str, str]
     if card_id == "noise_schedule":
         return alert_yellow if ctx.noise_count > 0 else calm_slate
     if card_id == "flight_path":
-        return alert_cyan if ctx.has_flight_path else calm_slate
+        if not ctx.show_flight_feature:
+            return calm_slate
+        return alert_cyan if ctx.has_flight_path else warn_amber
     if card_id == "reports_311":
         if ctx.reports_count >= _HIGH_311_REPORTS_THRESHOLD:
             return alert_purple

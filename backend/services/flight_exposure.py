@@ -16,6 +16,111 @@ from services.city_data import _get_client, get_scan_radius_miles
 
 logger = logging.getLogger(__name__)
 
+# NYC ~2 mi calibration: typical vs elevated overflight rates (ADS-B samples, ≤10k ft).
+_NIGHT_RATE_MEDIAN = 0.35
+_NIGHT_RATE_P90 = 1.85
+_DAY_RATE_MEDIAN = 1.15
+_DAY_RATE_P90 = 5.8
+_NIGHT_WEIGHT = 0.58
+_DAY_WEIGHT = 0.42
+_SHOW_COMBINED_MIN = 0.54
+_SHOW_NIGHT_MIN = 0.60
+_SHOW_DAY_MIN = 0.68
+_HIGH_COMBINED_MIN = 0.72
+_HIGH_NIGHT_MIN = 0.78
+_MIN_SAMPLES_TO_SHOW = 40
+
+
+def _percentile_from_rate(
+    rate: float,
+    *,
+    median_rate: float,
+    p90_rate: float,
+) -> float:
+    x = max(0.0, float(rate))
+    lx = math.log1p(x)
+    l50 = math.log1p(max(0.0, median_rate))
+    l90 = math.log1p(max(1e-6, p90_rate))
+    denom = max(1e-6, l90 - l50)
+    k = 2.2 / denom
+    z = (lx - l50) * k
+    return 1.0 / (1.0 + math.exp(-z))
+
+
+def _comparison_label(percentile: float) -> str:
+    if percentile >= 0.85:
+        return "among the highest we see in NYC"
+    if percentile >= 0.70:
+        return "higher than most NYC blocks"
+    return "above typical NYC levels"
+
+
+def _elevation_level(combined: float, night_p: float) -> str:
+    if combined >= _HIGH_COMBINED_MIN or night_p >= _HIGH_NIGHT_MIN:
+        return "high"
+    if combined >= _SHOW_COMBINED_MIN or night_p >= _SHOW_NIGHT_MIN:
+        return "elevated"
+    return "typical"
+
+
+def _should_show_flight_feature(
+    *,
+    data_quality: str,
+    sample_count: int,
+    combined_percentile: float,
+    night_percentile: float,
+    day_percentile: float,
+) -> bool:
+    if data_quality == "unavailable" or sample_count < _MIN_SAMPLES_TO_SHOW:
+        return False
+    return (
+        combined_percentile >= _SHOW_COMBINED_MIN
+        or night_percentile >= _SHOW_NIGHT_MIN
+        or day_percentile >= _SHOW_DAY_MIN
+    )
+
+
+def _build_headline(
+    *,
+    night_per_hr: float,
+    day_per_hr: float,
+    night_percentile: float,
+    day_percentile: float,
+    combined_percentile: float,
+    radius_miles: float,
+    observation_days: int,
+) -> tuple[str, str]:
+    comparison = _comparison_label(max(combined_percentile, night_percentile, day_percentile))
+    r = radius_miles
+    days = observation_days
+
+    if night_percentile >= _HIGH_NIGHT_MIN:
+        headline = (
+            f"Heavy night flight traffic — about {night_per_hr:.1f} overflights per hour "
+            f"from 10 PM to 7 AM within ~{r:g} mi ({comparison})."
+        )
+    elif night_percentile >= _SHOW_NIGHT_MIN:
+        headline = (
+            f"More night flight noise than typical for NYC — ~{night_per_hr:.1f}/hr overnight "
+            f"within ~{r:g} mi ({comparison})."
+        )
+    elif day_percentile >= _SHOW_DAY_MIN:
+        headline = (
+            f"Busier daytime flight corridor — ~{day_per_hr:.1f} overflights per hour nearby "
+            f"({comparison})."
+        )
+    else:
+        headline = (
+            f"Above-average aircraft activity for NYC — ~{night_per_hr:.1f}/hr at night and "
+            f"~{day_per_hr:.1f}/hr by day within ~{r:g} mi ({comparison})."
+        )
+
+    detail = (
+        f"Rates are based on {days} days of ADS-B samples within ~{r:g} mi "
+        f"(aircraft at or below 10,000 ft)."
+    )
+    return headline, detail
+
 
 def _haversine_miles(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
     r = 3958.7613
@@ -35,13 +140,12 @@ def compute_exposure(
     days: int = 7,
     radius_miles: float | None = None,
     max_alt_ft: int = 10000,
-) -> FlightExposure | None:
+) -> FlightExposure:
     """
-    Prototype exposure score from stored ADS-B samples in Supabase.
-    This is intentionally simple: good enough for UX iteration.
+    Address-relative flight noise exposure from stored ADS-B samples.
 
-    Tune without code changes: EXPOSURE_DAYS (1–30), EXPOSURE_RADIUS_MILES (0.25–10).
-    Defaults to SCAN_RADIUS_MILES when EXPOSURE_RADIUS_MILES is unset.
+    Returns comparative percentiles vs NYC baselines. ``show_flight_feature`` is true only
+    when exposure is materially above typical — otherwise the UI hides flight paths/cards.
     """
     try:
         days = max(1, min(30, int(os.getenv("EXPOSURE_DAYS", str(days)))))
@@ -58,23 +162,33 @@ def compute_exposure(
     except ValueError:
         radius_miles = get_scan_radius_miles()
 
+    unavailable = FlightExposure(
+        night_overflights_per_hour=0.0,
+        day_overflights_per_hour=0.0,
+        typical_altitude_ft=None,
+        trend=None,
+        data_quality="unavailable",
+        show_flight_feature=False,
+        elevation_level="unavailable",
+        night_percentile=None,
+        day_percentile=None,
+        combined_percentile=None,
+        headline=None,
+        detail=None,
+        observation_days=days,
+        radius_miles=radius_miles,
+        sample_count=0,
+    )
+
     try:
         supabase = _get_client()
     except Exception:
-        # Never break /scan if Supabase is unreachable; exposure is optional.
-        return FlightExposure(
-            night_overflights_per_hour=0.0,
-            day_overflights_per_hour=0.0,
-            typical_altitude_ft=None,
-            trend=None,
-            data_quality="unavailable",
-        )
+        return unavailable
 
     try:
         since = datetime.now(timezone.utc) - timedelta(days=days)
         since_iso = since.isoformat()
 
-        # Bounding box prefilter (fast)
         dlat = radius_miles / 69.0
         dlng = radius_miles / (69.0 * max(0.2, math.cos(math.radians(coord.lat))))
         lat_min, lat_max = coord.lat - dlat, coord.lat + dlat
@@ -93,15 +207,8 @@ def compute_exposure(
         )
         rows = getattr(res, "data", None) or []
         if not rows:
-            return FlightExposure(
-                night_overflights_per_hour=0.0,
-                day_overflights_per_hour=0.0,
-                typical_altitude_ft=None,
-                trend=None,
-                data_quality="unavailable",
-            )
+            return unavailable
 
-        # Filter by true radius + altitude
         filtered: list[dict] = []
         alt_fts: list[int] = []
         for r in rows:
@@ -133,9 +240,18 @@ def compute_exposure(
                 typical_altitude_ft=None,
                 trend=None,
                 data_quality="sparse",
+                show_flight_feature=False,
+                elevation_level="typical",
+                night_percentile=0.0,
+                day_percentile=0.0,
+                combined_percentile=0.0,
+                headline=None,
+                detail=None,
+                observation_days=days,
+                radius_miles=radius_miles,
+                sample_count=0,
             )
 
-        # Convert samples into "overflight minutes" (dedupe by aircraft+minute).
         night_keys = set()
         day_keys = set()
         hours_seen = set()
@@ -154,7 +270,6 @@ def compute_exposure(
             else:
                 day_keys.add(key)
 
-        # Rate per hour: keys are per-minute events; convert to per-hour using observed span.
         observed_hours = max(1, len(hours_seen))
         night_per_hr = len(night_keys) / observed_hours
         day_per_hr = len(day_keys) / observed_hours
@@ -164,8 +279,43 @@ def compute_exposure(
             alt_fts.sort()
             typical_alt = alt_fts[len(alt_fts) // 2]
 
-        # Data quality: very rough heuristic based on sample volume
-        quality = "good" if len(filtered) >= 800 else "sparse"
+        sample_count = len(filtered)
+        quality = "good" if sample_count >= 800 else "sparse"
+
+        night_p = _percentile_from_rate(
+            night_per_hr, median_rate=_NIGHT_RATE_MEDIAN, p90_rate=_NIGHT_RATE_P90
+        )
+        day_p = _percentile_from_rate(
+            day_per_hr, median_rate=_DAY_RATE_MEDIAN, p90_rate=_DAY_RATE_P90
+        )
+        combined_p = _NIGHT_WEIGHT * night_p + _DAY_WEIGHT * day_p
+
+        show = _should_show_flight_feature(
+            data_quality=quality,
+            sample_count=sample_count,
+            combined_percentile=combined_p,
+            night_percentile=night_p,
+            day_percentile=day_p,
+        )
+        elevation = _elevation_level(combined_p, night_p) if show else "typical"
+
+        headline = None
+        detail = None
+        if show:
+            headline, detail = _build_headline(
+                night_per_hr=night_per_hr,
+                day_per_hr=day_per_hr,
+                night_percentile=night_p,
+                day_percentile=day_p,
+                combined_percentile=combined_p,
+                radius_miles=radius_miles,
+                observation_days=days,
+            )
+            if typical_alt is not None and typical_alt <= 3200:
+                detail = (
+                    f"{detail} Median altitude near ~{typical_alt:,} ft — "
+                    "lower passes can sound louder at street level."
+                )
 
         return FlightExposure(
             night_overflights_per_hour=round(night_per_hr, 2),
@@ -173,14 +323,17 @@ def compute_exposure(
             typical_altitude_ft=typical_alt,
             trend=None,
             data_quality=quality,
+            show_flight_feature=show,
+            elevation_level=elevation,
+            night_percentile=round(night_p, 3),
+            day_percentile=round(day_p, 3),
+            combined_percentile=round(combined_p, 3),
+            headline=headline,
+            detail=detail,
+            observation_days=days,
+            radius_miles=radius_miles,
+            sample_count=sample_count,
         )
     except Exception:
         logger.exception("flight_exposure: query or compute failed (missing table, RLS, or transient DB error)")
-        return FlightExposure(
-            night_overflights_per_hour=0.0,
-            day_overflights_per_hour=0.0,
-            typical_altitude_ft=None,
-            trend=None,
-            data_quality="unavailable",
-        )
-
+        return unavailable

@@ -28,11 +28,14 @@ export default function ResultsDashboard({ result, onReset, bulletsRefreshing = 
   );
 
   const sideSummary = useMemo((): ScanSummaryProps => {
-    const paths = result.map_data.flight_paths?.length
-      ? result.map_data.flight_paths
-      : result.map_data.flight_path
-        ? [result.map_data.flight_path]
-        : [];
+    const showFlight = Boolean(result.flight_exposure?.show_flight_feature);
+    const paths = showFlight
+      ? result.map_data.flight_paths?.length
+        ? result.map_data.flight_paths
+        : result.map_data.flight_path
+          ? [result.map_data.flight_path]
+          : []
+      : [];
     return {
       score: result.danger_score,
       riskLabel: result.risk_label,
@@ -41,6 +44,9 @@ export default function ResultsDashboard({ result, onReset, bulletsRefreshing = 
       swarmTotal: result.map_data.swarm_location_total ?? null,
       scanRadiusMi: result.map_data.scan_radius_miles ?? 2,
       flightPathCount: paths.length,
+      showFlightFeature: showFlight,
+      flightElevation: result.flight_exposure?.elevation_level ?? null,
+      threatCardCount: result.threat_cards.length,
     };
   }, [result]);
 

@@ -23,7 +23,7 @@ export default function ThreatCarousel({ cards, bulletsRefreshing = false }: Pro
     <div className="fade-in w-full" style={{ animationDelay: "0.3s" }}>
       <div className="flex justify-between items-center mb-2 px-2 gap-3">
         <h3 className="text-white font-black uppercase tracking-widest text-sm md:text-base flex items-center gap-2 shrink-0">
-          📑 9-Point Threat Analysis
+          📑 {cards.length}-Point Threat Analysis
         </h3>
         <div className="flex items-center gap-3 min-w-0">
           {bulletsRefreshing ? (

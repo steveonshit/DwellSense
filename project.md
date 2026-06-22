@@ -75,13 +75,14 @@ DwellSense/
 - **Google Places API (New)** fills the logistics cards: nearby transit, grocery, retail/mall, airport-related proximity, and similar renter-relevant places. It also backs **restaurant/bar rankings** when `YELP_API_KEY` is not set.
 - **Yelp Fusion API** (optional `YELP_API_KEY`) is the preferred source for **top restaurants & bars within 2 miles** — Yelp is the most realistic public ranking signal for dining (star rating + review volume).
 - **Google Gemini** is not the scoring engine. Gemini writes only the user-facing bullet summaries for the threat cards. The Wellness Score, risk level, labels, card IDs, card colors, titles, and fallback logic are deterministic Python.
+- **Two-phase scan (production):** the frontend sends `defer_gemini: true` so `/scan` returns map, score, and fact-locked template bullets quickly; a follow-up **`POST /scan/bullets`** completes Gemini bullet text when ready.
 - **APScheduler** runs background jobs inside the backend process: the daily municipal data refresh and, optionally, periodic ADS-B ingestion when `ADSB_INGEST_ENABLED=true`.
 
 ### One-minute presentation script (tech stack)
 
 Use this when explaining the system in a 3–5 minute presentation:
 
-> DwellSense is a full-stack web app. The user-facing site is built with Next.js, React, Tailwind, and Mapbox GL, and it is hosted on Vercel. When someone enters an address, the browser calls a Next.js API route, which securely forwards the request to our Python FastAPI backend running on Railway. The backend does the real analysis: it geocodes the address with Mapbox, pulls nearby NYC data from Supabase, calls Google Places for nearby transit and grocery access, ranks the top restaurants and bars within 2 miles (Yelp when configured, else Google Places), computes the Wellness Score in Python, and uses Gemini only to write short readable bullet summaries. Then the backend returns structured JSON, and the frontend turns that response into the score, cards, carousels, map pins, and flight-path visuals.
+> DwellSense is a full-stack web app. The user-facing site is built with Next.js, React, Tailwind, and Mapbox GL, and it is hosted on Vercel. When someone enters an address, the browser calls a Next.js API route, which securely forwards the request to our Python FastAPI backend running on Railway. The backend does the real analysis: it geocodes the address with Mapbox, pulls nearby NYC data from Supabase, calls Google Places for nearby transit and grocery access, ranks the top restaurants and bars within 2 miles (Yelp when configured, else Google Places), computes the Wellness Score in Python, and returns map + score + template bullets quickly. Gemini then refines threat-card bullet text in a follow-up call while the user already reads results. The frontend turns both responses into the score, cards, carousels, map pins, and flight-path visuals.
 
 ### Short memorization version
 
@@ -90,8 +91,9 @@ Use this when explaining the system in a 3–5 minute presentation:
 - **Data:** Supabase for NYC records and ADS-B samples.
 - **Map/geocoding:** Mapbox.
 - **Nearby places:** Google Places (+ optional Yelp for dining rankings).
-- **AI:** Gemini for text bullets only.
+- **AI:** Gemini for text bullets only (deferred in production).
 - **Scoring:** deterministic Python, not AI guessing.
+- **Scan UX:** two-phase — fast `/scan`, then `/scan/bullets` for Gemini.
 
 ---
 
@@ -100,22 +102,23 @@ Use this when explaining the system in a 3–5 minute presentation:
 ### High-level flow
 
 1. User submits an address on **Vercel** (e.g. `dwellsense.vercel.app`).
-2. Browser calls **`POST /api/scan`** on the Next.js app (keeps `BACKEND_URL` server-side).
+2. Browser calls **`POST /api/scan`** on the Next.js app with **`{ address, defer_gemini: true }`** (keeps `BACKEND_URL` server-side).
 3. Next.js proxies to **`POST {BACKEND_URL}/scan`** on Railway with a **~290s** upstream timeout; the route declares **`maxDuration = 300`** seconds.
-4. Backend runs geocoding, parallel DB + Places calls, flight math, deterministic scoring, then **Gemini** (bullets only — often the slowest step).
-5. JSON response drives the UI (map, logistics/dining proximity bar, threat cards).
+4. Backend runs geocoding, parallel DB + Places calls, flight math, deterministic scoring, and **returns immediately** with template bullets when `defer_gemini=true` (Gemini deferred).
+5. JSON response drives the UI (map, logistics/dining proximity bar, threat cards with template bullets).
+6. Browser calls **`POST /api/scan/bullets`** with the returned **`bullets_token`**; backend completes Gemini and returns refreshed **`threat_cards`**.
 
 ### Detailed address → result lifecycle
 
 1. **User types an address**
    - File: `frontend/components/HeroSection.tsx`
    - Example input: `Apt 4B, 350 W 42nd St, New York, NY`
-   - The landing page sends the trimmed address to the client-side scan handler in `frontend/app/page.tsx`.
+   - The landing page sends the trimmed address to the client-side scan handler in `frontend/components/HomeClient.tsx` (wrapped by server `frontend/app/page.tsx`).
 
 2. **Browser calls the Next.js API route**
-   - File: `frontend/app/page.tsx`
+   - File: `frontend/components/HomeClient.tsx`
    - Request: `POST /api/scan`
-   - Body: `{ "address": "..." }`
+   - Body: `{ "address": "...", "defer_gemini": true }`
    - Timeout: `AbortSignal.timeout(295_000)` so the browser does not hang forever.
 
 3. **Next.js acts as a secure proxy**
@@ -127,7 +130,7 @@ Use this when explaining the system in a 3–5 minute presentation:
 
 4. **FastAPI receives the scan**
    - File: `backend/routers/scan.py`
-   - Model: `ScanRequest`
+   - Model: `ScanRequest` (`address`, optional **`defer_gemini`**, default `false`)
    - Rejects empty addresses early.
 
 5. **Backend geocodes the address**
@@ -181,10 +184,11 @@ Use this when explaining the system in a 3–5 minute presentation:
     - Uses the same `adsb_samples` table to estimate night overflights per hour, day overflights per hour, typical altitude, and data quality.
     - Fail-open rule: if Supabase or ingestion data is unavailable, return `data_quality="unavailable"` instead of crashing `/scan`.
 
-13. **Backend calculates Wellness Score and risk labels**
+13. **Backend calculates Wellness Score and risk labels (v2)**
     - File: `backend/services/threat_card_layout.py`
-    - Score is deterministic Python.
+    - Score is deterministic Python (**v2**: one percentile model + one 311 adjustment + soft caps + gated plain-language labels).
     - The API field is still named `danger_score`, but the meaning is **Wellness Score**: `100` = best, `0` = worst.
+    - Labels: **Terrible → Bad → Average → Good → Very Good → Great → Excellent → Outstanding** (not legacy jargon like “Mixed Signals”).
 
 14. **Backend prepares threat-card chrome**
     - File: `backend/services/threat_card_layout.py`
@@ -192,8 +196,11 @@ Use this when explaining the system in a 3–5 minute presentation:
     - **`CardChromeContext`** drives border/subtitle colors from actual counts (e.g. green churn when evictions = 0; purple 311 when volume ≥ 200).
     - This keeps the product UI stable even if Gemini is slow or unavailable.
 
-15. **Gemini writes bullet text only**
+15. **Gemini writes bullet text only (sync or deferred)**
     - File: `backend/services/ai_analysis.py`
+    - When **`defer_gemini=false`** (default): Gemini runs inside `/scan` as before.
+    - When **`defer_gemini=true`**: `/scan` stores a **`PendingBulletsContext`** in memory (TTL **300s**) and returns **`bullets_token`** + **`gemini_status: "pending"`** with **template bullets** already merged via fact-lock.
+    - Client calls **`POST /scan/bullets`** with `{ "bullets_token": "..." }` → **`BulletsResponse`** with refreshed **`threat_cards`** and final **`gemini_status`**.
     - Gemini receives the same data brief and returns JSON shaped like `{ "bullets": { "card_id": ["...", "...", "..."] } }`.
     - **`_finalize_threat_bullets`** / **`_enforce_fact_locked_bullets`** overwrite bullets so every card matches municipal/flight counts (no cross-card contamination).
     - Third bullets use **card-specific** copy when a dataset is empty (not a generic “No recent reports!”).
@@ -202,32 +209,42 @@ Use this when explaining the system in a 3–5 minute presentation:
 
 16. **Backend returns one structured JSON response**
     - Model: `ScanResponse` in `backend/models/schemas.py`
-    - Includes `formatted_address`, `coordinates`, Wellness Score, risk labels, logistics, **`dining`** (top 4 restaurants/bars), threat cards, map data, flight exposure, and Gemini debug fields.
+    - Includes `formatted_address`, `coordinates`, Wellness Score, risk labels, logistics, **`dining`** (top 4 restaurants/bars), threat cards, map data, flight exposure, Gemini debug fields, and (when deferred) **`bullets_token`**.
 
 17. **Frontend waits for scan + loading ad**
-    - Files: `frontend/app/page.tsx`, `frontend/components/LoadingAd.tsx`
+    - Files: `frontend/components/HomeClient.tsx`, `frontend/components/LoadingAd.tsx`
     - The loading ad completes only when both conditions are true: the 5-second timer finished and the scan response is ready.
 
-18. **Frontend renders the result**
+18. **Frontend completes deferred Gemini bullets (when applicable)**
+    - File: `frontend/components/HomeClient.tsx`
+    - After results render, if **`gemini_status === "pending"`** and **`bullets_token`** is set, the client **`POST`s `/api/scan/bullets`** in the background.
+    - **`ThreatCarousel`** shows **“Refining AI summaries…”** while the deferred call runs; on success, **`threat_cards`** update in place. On failure, template bullets remain.
+
+19. **Frontend renders the result**
     - File: `frontend/components/ResultsDashboard.tsx`
-    - Components: `DangerBanner`, `LogisticsCarousel` (transit/grocery + top dining), `MapComponent`, `ThreatCarousel`, `SideAds`.
+    - Components: `DangerBanner` (optional **See 311 breakdown →** chip), `LogisticsCarousel` (transit/grocery + top dining, **dot nav**), `MapComponent`, `ThreatCarousel` (**dot nav**), `SideAds` (**Scan summary** panel on wide screens).
     - The frontend does not recompute the score. It displays the backend response.
 
-19. **Mapbox renders the interactive map**
+20. **Mapbox renders the interactive map**
     - File: `frontend/components/MapComponent.tsx`
     - Displays the NYC-locked viewport, target marker, zones, swarm pins, logistics markers, flight routes, and flight activity chips.
+    - **Flight Activity** is always shown; when **`flight_paths` is empty**, explicit copy explains no ADS-B tracks in stored samples (not a map error).
     - Map caption uses **`map_data.scan_radius_miles`** dynamically (e.g. “Showing 100 of N real NYC locations (2-mi)”).
     - Frontend **`filterFlightPathsWithinRadius`** is a safety net aligned with backend scan radius.
     - The map is client-side and uses `NEXT_PUBLIC_MAPBOX_TOKEN`.
 
-20. **PDF dossier (optional download)**
+21. **PDF dossier (optional download)**
     - Files: `frontend/app/api/pdf/route.ts` → `backend/routers/pdf.py`
     - Proxies the full `ScanResult` JSON; **`_pdf_text()`** normalizes Unicode/emojis for Helvetica (Latin-1 safe).
 
-21. **Flight lines are display-shaped on the client**
+22. **Flight lines are display-shaped on the client**
     - File: `frontend/lib/flightPathDisplay.ts`
     - This is visual-only shaping. It does not change backend truth data.
     - The display pipeline can densify long segments with great-circle interpolation, round corners, apply centripetal Catmull–Rom sampling, and keep plane animation on the same visible route coordinates.
+
+23. **Site footer (server-rendered)**
+    - File: `frontend/components/Footer.tsx` (Server Component)
+    - Wrapped by `frontend/app/page.tsx` alongside `HomeClient.tsx` so the copyright year is computed on each request (not baked into the client bundle).
 
 **Scan response extras:**
 
@@ -237,7 +254,9 @@ Use this when explaining the system in a 3–5 minute presentation:
 
 **Loading ad (UX):** `frontend/components/LoadingAd.tsx` runs a **5-second** countdown. The ad only completes when **both** the timer hits zero **and** the scan request has finished (`isApiReady`). If the scan takes longer than 5s, the user waits past the ad until data arrives. If they skip the ad early, they still wait until the API returns.
 
-**Client:** `frontend/app/page.tsx` uses `AbortSignal.timeout(295_000)` on the fetch to `/api/scan` so the UI does not hang forever.
+**Deferred Gemini (UX):** Production sends **`defer_gemini: true`**, so users see map + score + template bullets first; **`/api/scan/bullets`** refreshes AI copy afterward. The threat carousel shows **“Refining AI summaries…”** during the second call.
+
+**Client:** `frontend/components/HomeClient.tsx` uses `AbortSignal.timeout(295_000)` on the fetch to `/api/scan` so the UI does not hang forever.
 
 **Health check:** `GET /health` on the backend returns `{"status":"ok","service":"DwellSense API"}`.
 
@@ -534,8 +553,8 @@ Before implementing or verifying a feature, confirm **where** it should land:
 ### Vercel (frontend)
 
 - Project linked to **`frontend`** as root (or deploy from `frontend/` via CLI).
-- **`vercel.json`** sets **`maxDuration`: 300** seconds for `app/api/scan/route.ts` and `app/api/pdf/route.ts` so long scans (Gemini + Places) are not cut off by the default serverless limit.
-- **`frontend/app/api/scan/route.ts`** exports `maxDuration = 300` and uses `AbortSignal.timeout(290_000)` on the fetch to the backend.
+- **`vercel.json`** sets **`maxDuration`: 300** seconds for `app/api/scan/route.ts`, **`app/api/scan/bullets/route.ts`**, and `app/api/pdf/route.ts` so long scans (Gemini + Places) are not cut off by the default serverless limit.
+- **`frontend/app/api/scan/route.ts`** and **`frontend/app/api/scan/bullets/route.ts`** export `maxDuration = 300` and use `AbortSignal.timeout(290_000)` on fetches to the backend.
 - **Vercel CLI:** `npx vercel ls` / `vercel deploy` require a valid token (`vercel login`). An expired local token does **not** mean production is down — use the live URL or Railway/Vercel dashboards to confirm deploy status.
 
 ---
@@ -579,13 +598,21 @@ This table stores raw ADS‑B position samples — individual aircraft observati
 | Flight exposure scoring | `backend/services/flight_exposure.py` |
 | Swarm pin types | `backend/models/schemas.py` (`SwarmPin`) |
 | Dining card schema | `backend/models/schemas.py` (`RestaurantBarCard`) |
+| Deferred bullets models | `backend/models/schemas.py` (`BulletsRequest`, `BulletsResponse`, `PendingBulletsContext`) |
 | Next.js scan proxy | `frontend/app/api/scan/route.ts` |
-| Scan + loading ad flow | `frontend/app/page.tsx`, `frontend/components/LoadingAd.tsx` |
+| Next.js deferred bullets proxy | `frontend/app/api/scan/bullets/route.ts` |
+| Home page shell (server) | `frontend/app/page.tsx` |
+| Scan + loading ad + deferred bullets (client) | `frontend/components/HomeClient.tsx` |
+| Site footer (server, dynamic copyright year) | `frontend/components/Footer.tsx` |
 | Results UI | `frontend/components/ResultsDashboard.tsx` |
+| Carousel dot nav (shared) | `frontend/components/CarouselDots.tsx`, `frontend/lib/carouselScroll.ts` |
+| Wellness banner + 311 breakdown chip | `frontend/components/DangerBanner.tsx` |
+| Side scan summary (≥1550px) | `frontend/components/SideAds.tsx` |
 | Shared TS types | `frontend/lib/types.ts` |
 | Map + markers | `frontend/components/MapComponent.tsx` |
 | Flight line display shaping (great-circle arcs + smoothing, map-only) | `frontend/lib/flightPathDisplay.ts` |
 | Logistics carousel | `frontend/components/LogisticsCarousel.tsx` |
+| Threat carousel | `frontend/components/ThreatCarousel.tsx` |
 | Top dining (merged into logistics bar) | `frontend/lib/proximityCards.ts`, `frontend/components/LogisticsCarousel.tsx` |
 
 ---
@@ -620,7 +647,8 @@ This table stores raw ADS‑B position samples — individual aircraft observati
 - **Timeout:** `GEMINI_TIMEOUT_SECONDS` (default **300**) wrapping `asyncio.to_thread(model.generate_content, ...)` when `> 0`. Set **`0`** to disable the `asyncio.wait_for` guard (still subject to upstream HTTP limits).
 - **Parsing:** Response text is read safely (including when `.text` is empty); JSON tolerates markdown fences; one retry on non-timeout failures.
 - **Fallback bullets:** If the key is missing → template bullets with a third line mentioning **`GEMINI_API_KEY`**. If the key exists but Gemini errors or times out → template third line says **AI summary unavailable**; counts/map still valid.
-- **Cache:** In-memory cache keyed by address hash + crime / 311 / permit / **eviction** counts (`ai_analysis.py`).
+- **Cache:** In-memory cache keyed by address hash + crime / 311 / permit / **eviction** counts (`ai_analysis.py`). Version string **`2026-06-20-wellness-v2`** busts stale score/bullet caches when scoring changes.
+- **Deferred bullets store:** In-memory **`_pending_bullets`** map (TTL **300s**) keyed by cache token when **`defer_gemini=true`**.
 - **Debug fields:** API responses include `gemini_configured` plus `gemini_status`, `gemini_latency_ms`, `gemini_timeout_seconds`, and (on failures) `gemini_error_kind` + `gemini_error_detail` so you can distinguish **missing key vs timeout vs API errors** without reading Railway logs. Check **Browser DevTools → Network → `/api/scan` → Response**.
 
 ---
@@ -638,26 +666,44 @@ The UI banner and PDF label it as “Wellness Score”.
 
 ### Risk label wording (UX)
 
-Risk labels are short adjectives and **do not include** “block” / “neighborhood” wording (e.g. **`STRONG SIGNALS`**, **`BELOW-AVERAGE`**).
+Risk labels are **plain renter-facing words** (no legacy jargon):
 
-### Current formula (Option C)
+| Score band (approx.) | Label |
+|----------------------|--------|
+| 0–15 | Terrible |
+| 16–28 | Bad |
+| 29–42 | Average |
+| 43–55 | Good |
+| 56–68 | Very Good |
+| 69–80 | Great |
+| 81–90 | Excellent |
+| 91–100 | Outstanding |
 
-The score is computed in `backend/services/threat_card_layout.py` using a **percentile-style curve** over log-scaled counts:
+**Gates:** an all-zero municipal radius is capped at **Very Good** (sparse data, not proof of excellence). **Excellent** / **Outstanding** require multiple clean signals — not just a high numeric score.
 
-- Convert each metric’s count → smooth percentile-like value (0..1) using a logistic curve over `log1p(count)`
-- Take a weighted average → **raw hazard**
-- Invert: `wellness = 100 - raw_hazard`
+Banner emojis: **Excellent** ✨, **Outstanding** 🌟; other bands use risk-level emoji (🚨 / ⚠️ / 🟡 / ✅).
+
+### Current formula (Wellness v2)
+
+Implemented in `backend/services/threat_card_layout.py`:
+
+1. **`_base_wellness_score`** — weighted percentile hazard from crime, 311, permits, evictions (log-scaled), inverted to 0–100, minus a small NYC baseline (−5).
+2. **`_apply_311_adjustment`** — one extra penalty when 311 volume is high (≥200, or ≥80 when crime is quiet) but crime is low.
+3. **`_apply_safety_caps`** — soft ceilings for crime, evictions, permits, and truncated fetches (no stacked duplicate penalties).
+4. **`_label_for_score`** — maps score to plain label + gates top tiers.
+
+Example calibration: **~5k 311, 0 crime** → about **37 Average** (not legacy **MIXED SIGNALS ~47** or over-strict **Bad ~22**).
 
 ### Caps + honesty
 
 Some queries are intentionally capped (e.g. dense Manhattan can hit limits). When caps are hit, the system:
 
 - adds a note to `risk_description` indicating counts may be capped
-- avoids claiming a perfect “100” (caps the wellness score’s upper bound in truncated cases)
+- applies a soft wellness ceiling via **`_apply_safety_caps`** when **`capped=true`**
 
 ### High 311 volume adjustment
 
-When **`reports_count ≥ 200`** and **`crime_count < 8`**, a modest penalty is applied so dense 311 neighborhoods do not read as **STRONG SIGNALS** when NYPD crime is quiet. The banner adds an explicit caveat pointing users to the **311 REPORTS** card and map pins. Example: ~3,000 311 with zero crime lands around **MIXED SIGNALS (~47)** rather than **BELOW-AVERAGE (~37)**.
+When **`reports_count ≥ 200`** and **`crime_count < 8`**, the v2 311 adjustment pulls the score down so dense 311 neighborhoods do not read as top tiers when NYPD crime is quiet. The banner adds an explicit caveat and (in the UI) a **See 311 breakdown →** chip that scrolls to the **311 REPORTS** threat card when volume is high.
 
 ---
 
@@ -666,11 +712,16 @@ When **`reports_count ≥ 200`** and **`crime_count < 8`**, a modest penalty is 
 **Implemented:**
 
 - **Smaller Gemini ask:** Scoring and threat-card chrome live in Python; Gemini returns only **`bullets`** JSON — reduces latency vs the old full-card JSON.
+- **Two-phase scan (production):** `defer_gemini` on `/scan` + **`POST /scan/bullets`** + frontend background refresh — users see map/score/template bullets before Gemini finishes.
+- **Wellness score v2:** plain-language labels (Terrible → Outstanding), gated top tiers, calibrated 311 adjustment (`threat_card_layout.py`).
 - **Top dining within 2 miles:** Yelp-first (optional key) + Google Places fallback; merged into `LogisticsCarousel` via `proximityCards.ts`.
 - **Fact-locked threat cards:** All nine cards’ bullets enforced against real municipal/flight counts (`ai_analysis.py`).
 - **PDF dossier:** Unicode-safe generation via `_pdf_text()` in `backend/routers/pdf.py`.
-- **Public beta UI:** Navbar shows **Public beta**; side panels are honest **Sponsored / Ad space** placeholders (no fake stats).
+- **Public beta UI:** Navbar shows **Public beta**; side panels show **Scan summary** on wide screens (≥1550px) during results, else honest **Sponsored / Ad space** placeholders.
+- **Results UX polish:** carousel dot nav (proximity + threat), hidden carousel scrollbars, 311 breakdown chip, flight empty-state copy, logistics distance nowrap.
+- **Server-rendered footer:** `Footer.tsx` for dynamic copyright year.
 - **ESLint:** `frontend/.eslintrc.json` extends `next/core-web-vitals`.
+- **Flight exposure NYC night window:** `America/New_York` 10 PM–7 AM in `flight_exposure.py`.
 
 ---
 
@@ -684,8 +735,8 @@ When **`reports_count ≥ 200`** and **`crime_count < 8`**, a modest penalty is 
 
 **Not yet implemented** (discussed direction):
 
-- **Two-phase load:** Return map + logistics + merged threat cards from `/scan` **without waiting for Gemini** (or return immediately after Python merge with template bullets), then **`POST /analyze`** or similar to refresh bullets when Gemini finishes — so users read the top of the page while AI runs.
-- **Alternative models:** If latency remains an issue, evaluate faster inference hosts (e.g. Groq) or other APIs — quality vs speed tradeoff.
+- **HPD violations ingestion:** populate tenant-warning signals from NYC HPD data (today the card is honest that HPD is not ingested).
+- **Alternative models:** If latency remains an issue even with deferred bullets, evaluate faster inference hosts (e.g. Groq) or other APIs — quality vs speed tradeoff.
 
 ---
 
@@ -820,9 +871,9 @@ The backend now returns an optional `flight_exposure` field on the scan response
 
 Important: this prototype uses Supabase storage; if Supabase is unreachable or ingestion isn’t running, exposure returns **`data_quality="unavailable"`** and the UI shows **“Exposure: unavailable”**.
 
-**Fail-open behavior:** `/scan` must not crash if Supabase is down; exposure computation is wrapped so scans still succeed.
+**Night/day window:** `flight_exposure.py` uses **`America/New_York`** local time — **10 PM–7 AM** counts as night (renter-facing).
 
-**Known limitation (honesty):** the current night/day split in `flight_exposure.py` is still a **prototype** (UTC-hour heuristic). Before production, this should be switched to **America/New_York** local time windows and tuned to match renter expectations (e.g. “late night”).
+**Fail-open behavior:** `/scan` must not crash if Supabase is down; exposure computation is wrapped so scans still succeed.
 
 ---
 
@@ -837,7 +888,7 @@ source venv/bin/activate   # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 cp .env.example .env       # fill in keys (optional YELP_API_KEY for better dining rankings)
 # Optional flight modes for local experiments:
-#   FLIGHT_MODE=auto        (default) — Supabase samples if present, else corridors
+#   FLIGHT_MODE=auto        (default) — Supabase samples if present, else no paths
 #   FLIGHT_MODE=static      — dashed corridor demo look
 #   FLIGHT_MODE=live_adsb   — OpenSky per scan (slow; needs network)
 uvicorn main:app --reload --host 127.0.0.1 --port 8000
@@ -910,10 +961,15 @@ python -m jobs.daily_refresh
 - **Nearby municipal radius:** true Haversine radius is **2 miles** (`SCAN_RADIUS_MILES`, default **2**), with widened bbox prefilter + higher fetch caps to reduce premature truncation in dense areas
 - **311 sewer / water labels:** map zone and swarm pin labels now use NYC 311 descriptors to classify the issue while keeping visible names short, e.g. **Sewer Odor**, **Sewer Backup**, **Drain Blockage**, **Water Quality Issue**, **Water Leak**, or **Water Pressure**
 - **Fact-locked threat cards:** all nine cards’ bullets match municipal/flight counts; card-specific bottom lines; data-driven border colors
+- **Wellness score v2 + two-phase scan:** plain labels, deferred Gemini (`f918277`); faster perceived load
+- **Results UX polish:** carousel dots, 311 breakdown chip, flight empty-state, side scan summary, logistics distance fix
+- **Server-rendered footer:** dynamic copyright year (`c85136a`)
 - **PDF dossier:** Unicode-safe (`backend/routers/pdf.py`); download via **Download PDF Dossier** on results page
 - **No synthetic flight fallback in `auto`:** empty flight paths when no ADS-B samples (not static corridors)
 - **Production CORS:** `FRONTEND_URL=https://dwellsense.vercel.app` on Railway
-- **Public beta chrome:** navbar badge; honest side-ad placeholders; footer links to NYC Open Data
+- **Public beta chrome:** navbar badge; scan summary / honest side-ad placeholders; server-rendered footer; footer links to NYC Open Data
+
+**Production verification (June 2026, post-`f918277` / `c85136a`):** hard-refresh `https://dwellsense.vercel.app`, run a new scan (e.g. Crown Heights). Expect plain wellness labels (**Average**, not legacy jargon), **`gemini_status: "pending"`** + **`bullets_token`** on the first `/api/scan` response, then **`gemini_status: "ok"`** from `/api/scan/bullets`; carousel dot nav; optional **See 311 breakdown →** chip when 311 volume is high; footer **© 2026**.
 
 **Ongoing / decisions:**
 
@@ -921,12 +977,20 @@ python -m jobs.daily_refresh
 - **Optional:** set **`YELP_API_KEY`** on Railway for Yelp-sourced dining rankings (otherwise Google Places fallback)
 - **Ingestion:** `ADSB_INGEST_ENABLED` vs external cron running `python -m jobs.adsb_ingest`
 - **Flight-path warehouse:** promote `adsb_samples` from operational raw samples into a long-term warehouse: retention policy, source metadata, quality scoring, route/corridor aggregates, stable display tables, and observability
-- **Exposure honesty:** replace UTC night/day heuristic with **America/New_York** windows when you tighten the product story
+- **Deferred bullets durability:** `_pending_bullets` is in-memory on a single Railway instance — multi-instance or restart loses tokens (client keeps template bullets; acceptable for now)
 - **Optional:** commercial ADS‑B feed vs OpenSky-only if you need SLA-grade tracks at scale
 
 ---
 
 ## Recent changelog (high-signal)
+
+### June 2026 — wellness v2, two-phase scan, UX polish (`f918277`, `c85136a`)
+
+- **Two-phase scan:** `ScanRequest.defer_gemini`, `POST /scan/bullets`, `BulletsRequest` / `BulletsResponse`; frontend `HomeClient.tsx` + `/api/scan/bullets`; template bullets first, Gemini refresh in background.
+- **Wellness score v2 (`threat_card_layout.py`):** plain labels (Terrible → Outstanding), single percentile model + 311 adjustment + soft caps + gated top tiers; cache version **`2026-06-20-wellness-v2`**.
+- **Flight exposure:** night/day uses **`America/New_York`** (10 PM–7 AM).
+- **Results UX:** `DangerBanner` 311 breakdown chip; `CarouselDots` + `carouselScroll.ts` on proximity/threat carousels; `MapComponent` flight empty-state; `SideAds` scan summary panel (≥1550px); logistics card min-width 320px + distance nowrap.
+- **Footer:** `Footer.tsx` server component + `HomeClient.tsx` split for reliable dynamic copyright year.
 
 ### June 2026 — audit + UX polish (`fc4abc8` … `b9f28e2`)
 
@@ -954,4 +1018,4 @@ python -m jobs.daily_refresh
 
 ---
 
-*Last updated: **June 2026** — full-site audit fixes, fact-locked cards, PDF Unicode, flight no-fallback policy, wellness/311 scoring, threat-card UX polish, and production verification notes.*
+*Last updated: **June 2026** — wellness v2 scoring, two-phase deferred Gemini scan, results UX polish (carousel dots, 311 chip, scan summary, flight empty-state), server-rendered footer, and production verification notes.*
