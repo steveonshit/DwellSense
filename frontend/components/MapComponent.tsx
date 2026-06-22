@@ -4,6 +4,13 @@ import { useEffect, useRef, useCallback } from "react";
 import mapboxgl from "mapbox-gl";
 import { FlightExposure, MapData, LogisticsCard } from "@/lib/types";
 import { flightPathToLineLngLat, flightPathToRouteLatLng, filterFlightPathsWithinRadius } from "@/lib/flightPathDisplay";
+import {
+  flightAltitudeNote,
+  flightElevationBadge,
+  flightFrequencyLabel,
+  flightNoiseSummary,
+  formatObservationWindow,
+} from "@/lib/flightExposureDisplay";
 
 mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || "";
 
@@ -309,16 +316,6 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
         : [];
     const radiusMi = mapData.scan_radius_miles ?? 2;
     return filterFlightPathsWithinRadius(paths, mapData.target, radiusMi);
-  };
-
-  const formatSeenAgo = (isoUtc: string) => {
-    const t = Date.parse(isoUtc);
-    if (!Number.isFinite(t)) return null;
-    const mins = Math.max(0, Math.round((Date.now() - t) / 60000));
-    if (mins <= 1) return "seen <1m ago";
-    if (mins < 60) return `seen ${mins}m ago`;
-    const hrs = Math.round(mins / 60);
-    return `seen ${hrs}h ago`;
   };
 
   const addZones = (map: mapboxgl.Map) => {
@@ -754,98 +751,68 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
       />
 
       {showFlightFeature && flightExposure && (
-        <div className="mt-3 px-2 text-[10px] md:text-[11px] font-bold text-slate-400">
-          <div className="flex items-center justify-between gap-3 flex-wrap">
-            <div className="text-slate-200 font-black uppercase tracking-widest text-[11px]">
-              ✈️ Flight Noise Exposure
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <span
-                className={[
-                  "px-2 py-1 rounded-full border text-[10px] font-black uppercase tracking-wide",
-                  flightExposure.elevation_level === "high"
-                    ? "bg-rose-950/50 border-rose-600 text-rose-200"
-                    : "bg-cyan-950/40 border-cyan-600 text-cyan-200",
-                ].join(" ")}
-              >
-                {flightExposure.elevation_level === "high" ? "High" : "Elevated"} vs NYC
-              </span>
-              {showFlightFeature && getFlightPaths().length > 0 && (
-                <span className="text-slate-500">
-                  Tracks: <span className="text-cyan-300">{getFlightPaths().length}</span>
-                </span>
-              )}
-            </div>
+        <div className="mt-3 rounded-2xl border border-cyan-900/40 bg-slate-900/70 p-3 md:p-4">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <h4 className="inline-flex items-center gap-1.5 rounded-lg bg-white/20 border border-white/25 px-2.5 py-1 text-white font-black text-sm md:text-base leading-tight">
+              ✈️ Flight noise
+            </h4>
+            <span
+              className={[
+                "px-2 py-0.5 rounded-full border text-[11px] md:text-xs font-bold shrink-0",
+                flightExposure.elevation_level === "high"
+                  ? "bg-rose-950/50 border-rose-600 text-rose-200"
+                  : "bg-cyan-950/40 border-cyan-600 text-cyan-200",
+              ].join(" ")}
+              title="Compared to typical plane traffic within ~2 mi across NYC"
+            >
+              {flightElevationBadge(flightExposure)}
+            </span>
           </div>
 
-          {flightExposure.headline && (
-            <p className="mt-2 text-slate-200 font-semibold leading-snug max-w-3xl">
-              {flightExposure.headline}
-            </p>
-          )}
-          {flightExposure.detail && (
-            <p className="mt-1 text-slate-500 font-semibold leading-snug max-w-3xl">
-              {flightExposure.detail}
-            </p>
-          )}
+          <p className="mt-2.5 text-lg md:text-xl text-white font-bold leading-snug max-w-2xl">
+            {flightNoiseSummary(flightExposure)}
+          </p>
 
           {flightExposure.data_quality !== "unavailable" && (
-            <div className="mt-2 flex flex-wrap items-center gap-2">
-              <span className="px-2 py-1 rounded-full bg-slate-900 border border-slate-700 text-slate-300">
-                Night (10 PM–7 AM):{" "}
-                <span className="text-white">{flightExposure.night_overflights_per_hour}/hr</span>
-              </span>
-              <span className="px-2 py-1 rounded-full bg-slate-900 border border-slate-700 text-slate-300">
-                Day: <span className="text-white">{flightExposure.day_overflights_per_hour}/hr</span>
-              </span>
-              {flightExposure.typical_altitude_ft != null && (
-                <span className="px-2 py-1 rounded-full bg-slate-900 border border-slate-700 text-slate-300">
-                  Median alt:{" "}
-                  <span className="text-white">
-                    ~{flightExposure.typical_altitude_ft.toLocaleString()} ft
-                  </span>
-                </span>
-              )}
-              {flightExposure.combined_percentile != null && (
-                <span className="px-2 py-1 rounded-full bg-slate-900 border border-slate-700 text-slate-400">
-                  NYC percentile:{" "}
-                  <span className="text-cyan-300">
-                    {Math.round(flightExposure.combined_percentile * 100)}th
-                  </span>
-                </span>
-              )}
-            </div>
-          )}
-
-          {showFlightFeature && getFlightPaths().length > 0 && (
-            <div className="mt-2 flex gap-2 overflow-x-auto pb-1">
-              {getFlightPaths().slice(0, 3).map((p, idx) => (
-                <div
-                  key={idx}
-                  className="min-w-[220px] shrink-0 rounded-xl bg-slate-900/60 border border-slate-700 px-3 py-2"
-                >
-                  <div className="text-slate-200 font-black text-[11px] truncate">{p.label}</div>
-                  <div className="mt-1 flex flex-wrap gap-2 text-slate-400">
-                    {(p.path?.length ?? p.sample_count ?? 0) > 0 && (
-                      <span className="text-cyan-300 font-black">
-                        {p.sample_count ?? p.path?.length ?? 0} pts
-                      </span>
-                    )}
-                    {p.median_altitude_ft != null && <span>~{p.median_altitude_ft.toLocaleString()} ft</span>}
-                    {p.closest_miles != null && <span>closest {p.closest_miles} mi</span>}
-                    {p.last_seen_utc && <span>{formatSeenAgo(p.last_seen_utc) ?? ""}</span>}
-                  </div>
+            <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              <div className="rounded-lg bg-slate-800/90 border border-slate-700 px-3 py-2.5">
+                <div className="text-[11px] md:text-xs font-black uppercase tracking-widest text-slate-400">
+                  Overnight · 10 PM–7 AM
                 </div>
-              ))}
+                <div className="mt-1 text-lg md:text-xl font-black text-white leading-tight">
+                  {flightFrequencyLabel(flightExposure.night_overflights_per_hour)}
+                </div>
+                <div className="mt-0.5 text-base md:text-lg text-white font-semibold leading-snug">
+                  {flightExposure.night_overflights_per_hour < 0.2
+                    ? "Usually quiet at night"
+                    : `Roughly ${flightExposure.night_overflights_per_hour.toFixed(1)} passes per hour`}
+                </div>
+              </div>
+              <div className="rounded-lg bg-slate-800/90 border border-slate-700 px-3 py-2.5">
+                <div className="text-[11px] md:text-xs font-black uppercase tracking-widest text-slate-400">
+                  Daytime · 7 AM–10 PM
+                </div>
+                <div className="mt-1 text-lg md:text-xl font-black text-white leading-tight">
+                  {flightFrequencyLabel(flightExposure.day_overflights_per_hour)}
+                </div>
+                <div className="mt-0.5 text-base md:text-lg text-white font-semibold leading-snug">
+                  {flightExposure.day_overflights_per_hour < 0.2
+                    ? "Light daytime traffic"
+                    : `Roughly ${flightExposure.day_overflights_per_hour.toFixed(1)} passes per hour`}
+                </div>
+              </div>
             </div>
           )}
 
-          {getFlightPaths().length === 0 && (
-            <p className="mt-2 text-slate-500 font-semibold leading-snug max-w-3xl">
-              Exposure is elevated from stored ADS-B samples; map tracks appear when recent paths cross
-              within {scanRadiusLabel}.
+          {flightAltitudeNote(flightExposure) && (
+            <p className="mt-2.5 text-base md:text-lg text-amber-200 font-semibold leading-snug max-w-2xl">
+              {flightAltitudeNote(flightExposure)}
             </p>
           )}
+
+          <p className="mt-2 text-[11px] md:text-xs text-slate-400 font-semibold">
+            {formatObservationWindow(flightExposure)}
+          </p>
         </div>
       )}
 
@@ -868,9 +835,9 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
         )}
       </div>
 
-      {getFlightPaths().some((p) => (p.path?.length ?? 0) >= MIN_FLIGHT_PATH_POINTS) && (
+      {showFlightFeature && getFlightPaths().some((p) => (p.path?.length ?? 0) >= MIN_FLIGHT_PATH_POINTS) && (
         <div className="mt-2 px-2 text-[10px] md:text-[11px] font-bold text-slate-500">
-          Live flight tracks use real ADS-B observations (min {MIN_FLIGHT_PATH_POINTS} points per path); cyan dots mark each observed position.
+          Cyan lines show recent plane routes near this address.
         </div>
       )}
     </div>

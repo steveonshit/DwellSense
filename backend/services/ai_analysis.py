@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 # Bump this when bullet formatting / merge rules change so in-memory caches don't
 # serve stale card text across deploys.
-_ANALYSIS_CACHE_VERSION = "2026-06-22-flight-exposure-v1"
+_ANALYSIS_CACHE_VERSION = "2026-06-22-flight-exposure-v2"
 
 _PENDING_BULLETS_TTL_SEC = 300
 
@@ -670,9 +670,9 @@ def _enforce_fact_locked_bullets(
         out["flight_path"] = ["", "", ""]
     elif flight_exposure.headline:
         third = (
-            "Cyan lines on the map show recent ADS-B tracks within the scan radius."
+            "See the cyan route on the map for a recent plane path."
             if flight_path is not None
-            else "Exposure is elevated; map tracks appear when ADS-B samples are available."
+            else "Map routes appear when recent flight paths cross this area."
         )
         out["flight_path"] = [
             flight_exposure.headline,

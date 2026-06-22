@@ -7,7 +7,7 @@ import asyncio
 import logging
 from fastapi import APIRouter, HTTPException
 from models.schemas import ScanRequest, ScanResponse, MapData, ThreatCard, BulletsRequest, BulletsResponse
-from services import geocoding, city_data, places, flights, ai_analysis, flight_exposure
+from services import geocoding, city_data, places, flights, ai_analysis, flight_exposure, flight_preview
 from services.threat_card_layout import cards_from_specs_and_bullets, ordered_card_ids
 from services.city_data import (
     CRIME_FETCH_LIMIT,
@@ -116,8 +116,16 @@ async def scan(request: ScanRequest):
     flight_paths_task = flights.get_flight_paths(coord, limit=3)
     exposure, flight_paths_raw = await asyncio.gather(exposure_task, flight_paths_task)
 
+    if flight_preview.preview_enabled() and exposure.data_quality == "unavailable":
+        scan_radius_miles = city_data.get_scan_radius_miles()
+        exposure = flight_preview.preview_exposure(
+            coord, radius_miles=scan_radius_miles, days=7
+        )
+
     show_flight = bool(exposure and exposure.show_flight_feature)
     flight_paths = flight_paths_raw if show_flight else []
+    if show_flight and not flight_paths and flight_preview.preview_enabled():
+        flight_paths = flight_preview.preview_flight_paths(coord)
     flight_path = flight_paths[0] if flight_paths else None
 
     # ── 4. Build map data ────────────────────────────────────────────────────

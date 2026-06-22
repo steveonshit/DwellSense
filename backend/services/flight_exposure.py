@@ -80,6 +80,16 @@ def _should_show_flight_feature(
     )
 
 
+def _rate_word(rate: float) -> str:
+    if rate < 0.2:
+        return "rare"
+    if rate < 0.7:
+        return "occasional"
+    if rate < 2:
+        return "fairly common"
+    return "frequent"
+
+
 def _build_headline(
     *,
     night_per_hr: float,
@@ -90,34 +100,20 @@ def _build_headline(
     radius_miles: float,
     observation_days: int,
 ) -> tuple[str, str]:
-    comparison = _comparison_label(max(combined_percentile, night_percentile, day_percentile))
-    r = radius_miles
-    days = observation_days
+    _ = combined_percentile, radius_miles  # used for elevation elsewhere
 
     if night_percentile >= _HIGH_NIGHT_MIN:
-        headline = (
-            f"Heavy night flight traffic — about {night_per_hr:.1f} overflights per hour "
-            f"from 10 PM to 7 AM within ~{r:g} mi ({comparison})."
-        )
+        headline = "Planes fly over often at night — more than in most NYC neighborhoods."
     elif night_percentile >= _SHOW_NIGHT_MIN:
-        headline = (
-            f"More night flight noise than typical for NYC — ~{night_per_hr:.1f}/hr overnight "
-            f"within ~{r:g} mi ({comparison})."
-        )
+        headline = "More overnight flight noise than in most NYC neighborhoods."
     elif day_percentile >= _SHOW_DAY_MIN:
-        headline = (
-            f"Busier daytime flight corridor — ~{day_per_hr:.1f} overflights per hour nearby "
-            f"({comparison})."
-        )
+        headline = "Busier daytime air traffic than in most of NYC."
     else:
-        headline = (
-            f"Above-average aircraft activity for NYC — ~{night_per_hr:.1f}/hr at night and "
-            f"~{day_per_hr:.1f}/hr by day within ~{r:g} mi ({comparison})."
-        )
+        headline = "More flight activity here than typical for NYC."
 
     detail = (
-        f"Rates are based on {days} days of ADS-B samples within ~{r:g} mi "
-        f"(aircraft at or below 10,000 ft)."
+        f"Overnight: {_rate_word(night_per_hr)}; daytime: {_rate_word(day_per_hr)} "
+        f"(last {observation_days} days)."
     )
     return headline, detail
 
@@ -313,8 +309,8 @@ def compute_exposure(
             )
             if typical_alt is not None and typical_alt <= 3200:
                 detail = (
-                    f"{detail} Median altitude near ~{typical_alt:,} ft — "
-                    "lower passes can sound louder at street level."
+                    f"{detail} Many planes pass around {typical_alt:,} ft — "
+                    "low enough to hear from the street."
                 )
 
         return FlightExposure(
