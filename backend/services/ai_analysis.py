@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 # Bump this when bullet formatting / merge rules change so in-memory caches don't
 # serve stale card text across deploys.
-_ANALYSIS_CACHE_VERSION = "2026-06-22-wellness-v2d"
+_ANALYSIS_CACHE_VERSION = "2026-06-22-wellness-v2e"
 
 _PENDING_BULLETS_TTL_SEC = 300
 
@@ -1002,6 +1002,7 @@ async def analyze(
         reports_count,
         permit_count,
         eviction_count,
+        noise_count,
         crime_capped=crime_capped,
         reports_capped=reports_capped,
         permits_capped=permits_capped,

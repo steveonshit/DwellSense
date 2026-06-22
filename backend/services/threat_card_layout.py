@@ -32,20 +32,29 @@ _SCORE_WEIGHTS: dict[str, float] = {
 _MIN_DRAG_TO_MENTION = 4.0
 # Banner-only 2 mi NYC calibration (score math uses _SCORE_CALIB unchanged).
 _BANNER_DRAG_CALIB: dict[str, tuple[float, float]] = {
-    "crime": (8, 42),
+    "area_safety": (8, 42),
     "311": (2000, 4000),
     "permits": (2, 8),
     "evictions": (0.5, 3),
+    "noise": (180, 550),
+}
+_BANNER_WEIGHTS: dict[str, float] = {
+    "area_safety": 0.40,
+    "311": 0.26,
+    "permits": 0.14,
+    "evictions": 0.20,
+    "noise": 0.11,
 }
 _MIN_FACTOR_PERCENTILE = 0.32
 # Hide routine 311 when another factor is clearly more notable for this address.
 _SUPPRESS_311_BELOW_PERCENTILE = 0.42
 
 _FACTOR_LABELS: dict[str, tuple[str, str, str]] = {
-    "crime": ("NYPD crime", "report", "reports"),
+    "area_safety": ("area safety", "crime report", "crime reports"),
     "311": ("city reports", "city report", "city reports"),
     "permits": ("construction", "permit", "permits"),
     "evictions": ("evictions", "filing", "filings"),
+    "noise": ("noise", "complaint", "complaints"),
 }
 
 # v2 label bands (wellness score 0–100, higher is better).
@@ -334,16 +343,25 @@ def _factor_banner_line(kind: str, count: int, *, percentile: float | None = Non
     volume = _volume_word(p)
     label, singular, plural = _FACTOR_LABELS[kind]
 
-    if kind == "crime":
+    if kind == "area_safety":
         n = _format_count(count) if count >= 10 else str(count)
         word = singular if count == 1 else plural
-        return f"{volume} {label} — {n} {word}"
+        if p < 0.58:
+            return f"Area safety — {n} {word}"
+        return f"{volume} area safety concerns — {n} {word}"
 
     if kind == "311":
         word = singular if count == 1 else plural
         if p < 0.58:
             return f"City reports — {_format_count(count)} {word}"
         return f"{volume} 311 reports — {_format_count(count)} {word}"
+
+    if kind == "noise":
+        word = singular if count == 1 else plural
+        n = _format_count(count) if count >= 10 else str(count)
+        if p < 0.58:
+            return f"Noise complaints — {n} {word}"
+        return f"{volume} noise complaints — {n} {word}"
 
     word = singular if count == 1 else plural
     return f"{volume} {label} — {count} {word}"
@@ -418,19 +436,21 @@ def _pick_banner_drivers(
     reports_count: int,
     permit_count: int,
     eviction_count: int,
+    noise_count: int,
     extra_311_drag: float,
 ) -> list[tuple[str, int, float]]:
     """
     Pick 1–2 factors that best explain this address vs typical NYC ~2 mi blocks.
 
     Rank by how elevated each signal is for its own category (percentile), not raw
-    311 volume — so crime, construction, or evictions can lead when they stand out.
+    311 volume — so area safety, noise, construction, or evictions can lead when they stand out.
     """
     counts = {
-        "crime": crime_count,
+        "area_safety": crime_count,
         "311": reports_count,
         "permits": permit_count,
         "evictions": eviction_count,
+        "noise": noise_count,
     }
     candidates: list[tuple[str, int, float, float]] = []
     for kind, count in counts.items():
@@ -439,7 +459,7 @@ def _pick_banner_drivers(
         percentile = _factor_percentile(kind, count)
         if percentile < _MIN_FACTOR_PERCENTILE:
             continue
-        tie_break = _SCORE_WEIGHTS[kind] * percentile
+        tie_break = _BANNER_WEIGHTS[kind] * percentile
         candidates.append((kind, count, percentile, tie_break))
 
     if not candidates:
@@ -478,6 +498,7 @@ def _build_risk_description(
     reports_count: int,
     permit_count: int,
     eviction_count: int,
+    noise_count: int,
     *,
     capped: bool,
 ) -> str:
@@ -485,15 +506,19 @@ def _build_risk_description(
     scan_mi = city_data.get_scan_radius_miles()
     mi_label = f"~{scan_mi:g} mi"
     counts = {
-        "crime": crime_count,
+        "area_safety": crime_count,
         "311": reports_count,
         "permits": permit_count,
         "evictions": eviction_count,
+        "noise": noise_count,
     }
 
     all_clear = all(counts[k] == 0 for k in counts)
     if all_clear:
-        return f"No crime, 311 (city reports), evictions, or permits in {mi_label}."
+        return (
+            f"No area safety issues, city reports, evictions, construction permits, "
+            f"or noise complaints in {mi_label}."
+        )
 
     score_after_base = _base_wellness_score(
         crime_count, reports_count, permit_count, eviction_count
@@ -514,7 +539,12 @@ def _build_risk_description(
     )
 
     drivers = _pick_banner_drivers(
-        crime_count, reports_count, permit_count, eviction_count, extra_311_drag
+        crime_count,
+        reports_count,
+        permit_count,
+        eviction_count,
+        noise_count,
+        extra_311_drag,
     )
 
     cap_note = _cap_explanation(
@@ -548,6 +578,7 @@ def compute_risk_from_counts(
     reports_count: int,
     permit_count: int,
     eviction_count: int = 0,
+    noise_count: int = 0,
     *,
     crime_capped: bool = False,
     reports_capped: bool = False,
@@ -586,6 +617,7 @@ def compute_risk_from_counts(
         reports_count,
         permit_count,
         eviction_count,
+        noise_count,
         capped=capped,
     )
 
