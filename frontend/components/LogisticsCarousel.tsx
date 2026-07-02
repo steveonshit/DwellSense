@@ -17,7 +17,7 @@ export default function LogisticsCarousel({ cards, onHoverCard }: Props) {
 
   return (
     <div className="fade-in w-full" style={{ animationDelay: "0.1s" }}>
-      <div className="flex justify-between items-center mb-1 px-2 gap-3">
+      <div className="flex justify-between items-center mb-1 px-0 gap-3">
         <h3 className="text-white font-black uppercase tracking-widest text-base md:text-lg flex items-center gap-2.5 shrink-0">
           <span className="text-2xl md:text-3xl leading-none" aria-hidden>
             📍

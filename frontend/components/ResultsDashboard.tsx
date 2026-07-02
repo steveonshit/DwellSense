@@ -84,7 +84,7 @@ export default function ResultsDashboard({ result, onReset, bulletsRefreshing = 
   return (
     <>
       <SideAds summary={sideSummary} />
-      <div className="w-full space-y-5 pb-12 overflow-hidden relative z-20">
+      <div className="w-full space-y-3 pb-5 overflow-hidden relative z-20">
 
         <DangerBanner result={result} onScrollToCard={handleScrollToCard} />
 
@@ -101,10 +101,13 @@ export default function ResultsDashboard({ result, onReset, bulletsRefreshing = 
           flightExposure={result.flight_exposure}
         />
 
-        <ThreatCarousel cards={result.threat_cards} bulletsRefreshing={bulletsRefreshing} />
+        <div className="pt-5">
+          <ThreatCarousel cards={result.threat_cards} bulletsRefreshing={bulletsRefreshing} />
+        </div>
 
         {/* Action buttons */}
-        <div className="flex flex-col sm:flex-row gap-4 mt-4 fade-in" style={{ animationDelay: "0.4s" }}>
+        <div className="pt-5">
+          <div className="flex flex-col sm:flex-row gap-4 fade-in" style={{ animationDelay: "0.4s" }}>
           <button
             onClick={handleDownloadPdf}
             disabled={pdfLoading}
@@ -118,6 +121,7 @@ export default function ResultsDashboard({ result, onReset, bulletsRefreshing = 
           >
             🔄 Scan New Address
           </button>
+          </div>
         </div>
 
       </div>

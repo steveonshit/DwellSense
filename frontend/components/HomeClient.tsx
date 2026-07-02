@@ -112,7 +112,7 @@ export default function HomeClient() {
     <>
       <Navbar />
 
-      <main className="flex-1 w-full max-w-[1300px] mx-auto flex flex-col items-center px-4 md:px-8 mt-4 relative z-10">
+      <main className="flex-1 w-full max-w-[1300px] mx-auto flex flex-col items-center px-1.5 sm:px-2 md:px-3 min-[1550px]:px-5 mt-4 relative z-10">
         {view === "hero" && (
           <>
             {error && (

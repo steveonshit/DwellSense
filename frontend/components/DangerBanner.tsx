@@ -41,7 +41,7 @@ export default function DangerBanner({ result, onScrollToCard }: Props) {
 
   return (
     <div
-      className={`bg-gradient-to-r ${colors.bg} border ${colors.border} p-4 md:px-6 md:py-4 rounded-2xl flex flex-col md:flex-row justify-between items-center shadow-xl fade-in mt-2`}
+      className={`bg-gradient-to-r ${colors.bg} border ${colors.border} p-2.5 md:px-3 md:py-3 rounded-2xl flex flex-col md:flex-row justify-between items-center shadow-xl fade-in mt-3`}
     >
       <div>
         <h2 className="text-xl md:text-3xl font-black text-white flex items-center gap-3 uppercase tracking-tight">

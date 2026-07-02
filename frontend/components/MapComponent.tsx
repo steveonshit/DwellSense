@@ -732,8 +732,8 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
   }, []);
 
   return (
-    <div className="w-full bg-slate-800 rounded-3xl border border-slate-700 shadow-2xl px-2 pt-2 pb-2 md:px-3 md:pt-2.5 md:pb-2.5 fade-in" style={{ animationDelay: "0.2s" }}>
-      <div className="flex justify-between items-center mb-2 px-2">
+    <div className="w-full bg-slate-800 rounded-3xl border border-slate-700 shadow-2xl px-1 pt-2 pb-2 md:px-2 md:pt-2.5 md:pb-2.5 fade-in" style={{ animationDelay: "0.2s" }}>
+      <div className="flex justify-between items-center mb-2 px-1">
         <h3 className="text-white font-black uppercase tracking-widest text-base md:text-lg flex items-center gap-2.5">
           <span className="text-xl md:text-2xl leading-none" aria-hidden>
             🗺️
@@ -832,7 +832,7 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
         )}
       </div>
 
-      <div className="flex flex-wrap justify-center sm:justify-start gap-x-4 gap-y-2 mt-2 px-2 text-[10px] md:text-[11px] font-bold text-slate-300">
+      <div className="flex flex-wrap justify-center sm:justify-start gap-x-4 gap-y-2 mt-2 px-1 text-[10px] md:text-[11px] font-bold text-slate-300">
         <span className="flex items-center gap-1"><span className="text-rose-500 text-lg">📍</span> Property</span>
         <span className="flex items-center gap-1">🚓 Crime</span>
         <span className="flex items-center gap-1">🐀 Rodents</span>
@@ -852,7 +852,7 @@ export default function MapComponent({ mapData, logistics, activeRoute, flightEx
       </div>
 
       {showFlightFeature && getFlightPaths().some((p) => (p.path?.length ?? 0) >= MIN_FLIGHT_PATH_POINTS) && (
-        <div className="mt-1 px-2 pb-0.5 text-[10px] md:text-[11px] font-bold text-slate-500">
+        <div className="mt-1 px-1 pb-0.5 text-[10px] md:text-[11px] font-bold text-slate-500">
           Cyan lines show recent plane routes near this address.
         </div>
       )}
