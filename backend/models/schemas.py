@@ -46,6 +46,8 @@ class ThreatCard(BaseModel):
     border_color: str
     text_color: str
     bullets: list[str]
+    # quiet | watch | elevated — drives badge + card wash in the UI
+    severity_level: Literal["quiet", "watch", "elevated"] = "quiet"
 
 
 class BulletsRequest(BaseModel):

@@ -40,6 +40,7 @@ export interface ThreatCard {
   border_color: string;
   text_color: string;
   bullets: string[];
+  severity_level?: "quiet" | "watch" | "elevated";
 }
 
 export interface Zone {

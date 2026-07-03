@@ -13,7 +13,7 @@ This document describes the **DwellSense** codebase, architecture, deployment, a
 - Fetches **transit / grocery / retail** proximity via **Google Places API (New)**
 - Ranks the **top 4 restaurants & bars within 2 miles** via **Yelp Fusion API** (preferred) or **Google Places API (New)** fallback — real ratings + review counts, no invented rankings
 - Computes **flight overlays** (`FLIGHT_MODE`: **`auto`** prefers stable Supabase `adsb_samples` polylines from completed time buckets, else no paths; **`static`** corridors only; **`live_adsb`** optional OpenSky per scan) and a **prototype flight exposure summary** (`flight_exposure`) when ingestion data exists
-- Builds a **Wellness Score** (0–100, where **100 is best**), **risk labels**, and **threat-card chrome** (titles, colors, emojis) in **Python**; **Google Gemini** writes only the **27 bullet strings** (three per card) from the same data brief
+- Builds a **Wellness Score** (0–100, where **100 is best**), **risk labels**, **`banner_driver`**, and **threat-card chrome** (titles, brand-accent colors, emojis) in **Python**; **Google Gemini** writes only the **27 bullet strings** (three per card) from the same data brief
 - Renders results on a **Mapbox** map and carousels
 
 Tagline: *Don’t sign a blind lease.*
@@ -43,7 +43,8 @@ Every user-visible number, pin, score input, listing, and map marker must trace 
 DwellSense/
 ├── backend/              # Python FastAPI API (includes services/threat_card_layout.py)
 ├── frontend/             # Next.js 15 + Tailwind + Mapbox GL
-│   └── lib/flightPathDisplay.ts  # Display-only flight line shaping (great-circle arcs + smoothing)
+│   ├── lib/flightPathDisplay.ts   # Display-only flight line shaping (great-circle arcs + smoothing)
+│   └── lib/flightExposureDisplay.ts  # Renter-facing flight noise copy + NYC comparison badge
 ├── Dwellsense Final.html # Standalone HTML demo (Leaflet) — not the production app
 ├── README.md             # Setup: Supabase SQL, env vars, local run
 └── project.md            # This file — architecture, deploy, history, roadmap
@@ -192,8 +193,8 @@ Use this when explaining the system in a 3–5 minute presentation:
 
 14. **Backend prepares threat-card chrome**
     - File: `backend/services/threat_card_layout.py`
-    - Python controls card IDs, emoji, titles, subtitles, **data-driven border colors**, risk levels, and fallback structure.
-    - **`CardChromeContext`** drives border/subtitle colors from actual counts (e.g. green churn when evictions = 0; purple 311 when volume ≥ 200).
+    - Python controls card IDs, emoji, titles, subtitles, **brand-accent border colors** (neutral slate default; rose when elevated), risk levels, and fallback structure.
+    - **`CardChromeContext`** drives border colors: slate when quiet or watch-tier activity; **rose** only for elevated signals (evictions, police calls, 311 ≥ **200**, flight path when gated on).
     - This keeps the product UI stable even if Gemini is slow or unavailable.
 
 15. **Gemini writes bullet text only (sync or deferred)**
@@ -222,13 +223,13 @@ Use this when explaining the system in a 3–5 minute presentation:
 
 19. **Frontend renders the result**
     - File: `frontend/components/ResultsDashboard.tsx`
-    - Components: `DangerBanner` (optional **See 311 breakdown →** chip), `LogisticsCarousel` (transit/grocery + top dining, **dot nav**), `MapComponent`, `ThreatCarousel` (**dot nav**), `SideAds` (**Scan summary** panel on wide screens).
+    - Components: `DangerBanner` (purple **See … breakdown →** chip scrolls to the threat card matching **`banner_driver`** — area safety, noise, 311, permits, or evictions), `LogisticsCarousel` (transit/grocery + top dining, **dot nav**, larger emojis), `MapComponent` (taller map, flight panel flush under map when shown), `ThreatCarousel` (**3px** left severity border, **dot nav**), `SideAds` (**Scan summary** panel on wide screens).
     - The frontend does not recompute the score. It displays the backend response.
 
 20. **Mapbox renders the interactive map**
     - File: `frontend/components/MapComponent.tsx`
-    - Displays the NYC-locked viewport, target marker, zones, swarm pins, logistics markers, flight routes, and flight activity chips.
-    - **Flight Activity** is always shown; when **`flight_paths` is empty**, explicit copy explains no ADS-B tracks in stored samples (not a map error).
+    - Displays the NYC-locked viewport, target marker, zones, swarm pins, logistics markers, flight routes (when `show_flight_feature`), and gated flight noise panel.
+    - When **`flight_paths` is empty** or flight UI is gated off, flight map layers stay hidden — not a map error.
     - Map caption uses **`map_data.scan_radius_miles`** dynamically (e.g. “Showing 100 of N real NYC locations (2-mi)”).
     - Frontend **`filterFlightPathsWithinRadius`** is a safety net aligned with backend scan radius.
     - The map is client-side and uses `NEXT_PUBLIC_MAPBOX_TOKEN`.
@@ -606,11 +607,12 @@ This table stores raw ADS‑B position samples — individual aircraft observati
 | Site footer (server, dynamic copyright year) | `frontend/components/Footer.tsx` |
 | Results UI | `frontend/components/ResultsDashboard.tsx` |
 | Carousel dot nav (shared) | `frontend/components/CarouselDots.tsx`, `frontend/lib/carouselScroll.ts` |
-| Wellness banner + 311 breakdown chip | `frontend/components/DangerBanner.tsx` |
+| Wellness banner + driver breakdown chip | `frontend/components/DangerBanner.tsx`, `frontend/lib/bannerDriver.ts` |
 | Side scan summary (≥1550px) | `frontend/components/SideAds.tsx` |
 | Shared TS types | `frontend/lib/types.ts` |
 | Map + markers | `frontend/components/MapComponent.tsx` |
 | Flight line display shaping (great-circle arcs + smoothing, map-only) | `frontend/lib/flightPathDisplay.ts` |
+| Flight noise panel copy + NYC comparison badge | `frontend/lib/flightExposureDisplay.ts`, `frontend/components/MapComponent.tsx` |
 | Logistics carousel | `frontend/components/LogisticsCarousel.tsx` |
 | Threat carousel | `frontend/components/ThreatCarousel.tsx` |
 | Top dining (merged into logistics bar) | `frontend/lib/proximityCards.ts`, `frontend/components/LogisticsCarousel.tsx` |
@@ -624,7 +626,8 @@ This table stores raw ADS‑B position samples — individual aircraft observati
 | Piece | Where |
 |--------|--------|
 | Nine cards’ **ids, emoji, titles, subtitles** | `threat_card_layout.py` (`CARD_SPECS`) |
-| **Border + subtitle colors** (data-driven) | `threat_card_layout.resolve_card_colors` + `CardChromeContext` |
+| **Border + subtitle colors** (brand accent) | `threat_card_layout.resolve_card_colors` + `CardChromeContext` — slate default; **rose** border on elevated only |
+| **Wellness banner driver** (`banner_driver`) | `threat_card_layout._pick_banner_drivers` → `ScanResponse.banner_driver`; frontend `frontend/lib/bannerDriver.ts` |
 | **Wellness Score** (`danger_score` field), **risk_level**, **risk_label**, **risk_description** | `threat_card_layout.compute_risk_from_counts` |
 | **27 bullets** (three per card) | Gemini returns JSON `{ "bullets": { "high_churn": ["","",""], ... } }` only (model configurable) |
 | **Fact-lock** (bullets must match counts) | `ai_analysis._enforce_fact_locked_bullets` after Gemini merge |
@@ -632,13 +635,19 @@ This table stores raw ADS‑B position samples — individual aircraft observati
 
 **Card chrome highlights (current):**
 
-| Card id | Title (chrome) | Notes |
-|---------|----------------|-------|
-| `high_churn` | TENANT CHURN | Evictions only; green border when zero filings |
-| `tenant_warnings` | TENANT WARNINGS | Subtitle: HPD data **not ingested** — bullets never claim violations |
-| `demolitions` | CONSTRUCTION & DEMOLITIONS | DOB active permits + 311 construction counts |
-| `flight_path` | FLIGHT PATH | Subtitle: ADS-B tracks within scan radius (not heuristic corridors in `auto`) |
-| `reports_311` | 311 REPORTS | Stronger border when volume ≥ **200** |
+| Card id | Title (chrome) | Rose accent when |
+|---------|----------------|------------------|
+| `high_churn` | TENANT CHURN | Evictions > 0 |
+| `police_calls` | POLICE CALLS | Crime > 0 |
+| `area_safety` | AREA SAFETY | Never (stays slate; signal in bullets) |
+| `tenant_warnings` | TENANT WARNINGS | Never; subtitle: HPD data **not ingested** |
+| `demolitions` | CONSTRUCTION & DEMOLITIONS | Never (permits/construction stay slate) |
+| `noise_schedule` | NOISE SCHEDULE | Never (noise complaints stay slate) |
+| `flight_path` | FLIGHT NOISE | `show_flight_feature` + active path |
+| `reports_311` | 311 REPORTS | Volume ≥ **200** |
+| `oven_effect` | OVEN EFFECT | Never (informational) |
+
+**Brand palette (Option 3 — local):** default border `#64748b`, subtitle `#94a3b8`; elevated border `#e11d48` (rose), subtitle stays slate. `ThreatCarousel.tsx` uses a **3px** left border. No per-category hues; no amber watch tier.
 
 **Gemini call details:**
 
@@ -647,7 +656,7 @@ This table stores raw ADS‑B position samples — individual aircraft observati
 - **Timeout:** `GEMINI_TIMEOUT_SECONDS` (default **300**) wrapping `asyncio.to_thread(model.generate_content, ...)` when `> 0`. Set **`0`** to disable the `asyncio.wait_for` guard (still subject to upstream HTTP limits).
 - **Parsing:** Response text is read safely (including when `.text` is empty); JSON tolerates markdown fences; one retry on non-timeout failures.
 - **Fallback bullets:** If the key is missing → template bullets with a third line mentioning **`GEMINI_API_KEY`**. If the key exists but Gemini errors or times out → template third line says **AI summary unavailable**; counts/map still valid.
-- **Cache:** In-memory cache keyed by address hash + crime / 311 / permit / **eviction** counts (`ai_analysis.py`). Version string **`2026-06-20-wellness-v2`** busts stale score/bullet caches when scoring changes.
+- **Cache:** In-memory cache keyed by address hash + crime / 311 / permit / **eviction** counts (`ai_analysis.py`). Version string **`2026-06-22-threat-brand-v1`** busts stale card-chrome caches.
 - **Deferred bullets store:** In-memory **`_pending_bullets`** map (TTL **300s**) keyed by cache token when **`defer_gemini=true`**.
 - **Debug fields:** API responses include `gemini_configured` plus `gemini_status`, `gemini_latency_ms`, `gemini_timeout_seconds`, and (on failures) `gemini_error_kind` + `gemini_error_detail` so you can distinguish **missing key vs timeout vs API errors** without reading Railway logs. Check **Browser DevTools → Network → `/api/scan` → Response**.
 
@@ -703,7 +712,7 @@ Some queries are intentionally capped (e.g. dense Manhattan can hit limits). Whe
 
 ### High 311 volume adjustment
 
-When **`reports_count ≥ 200`** and **`crime_count < 8`**, the v2 311 adjustment pulls the score down so dense 311 neighborhoods do not read as top tiers when NYPD crime is quiet. The banner adds an explicit caveat and (in the UI) a **See 311 breakdown →** chip that scrolls to the **311 REPORTS** threat card when volume is high.
+When **`reports_count ≥ 200`** and **`crime_count < 8`**, the v2 311 adjustment pulls the score down so dense 311 neighborhoods do not read as top tiers when NYPD crime is quiet. The banner adds an explicit caveat and (in the UI) a **See … breakdown →** chip that scrolls to the matching threat card via **`banner_driver`** (`area_safety` | `noise` | `311` | `permits` | `evictions`).
 
 ---
 
@@ -718,7 +727,10 @@ When **`reports_count ≥ 200`** and **`crime_count < 8`**, the v2 311 adjustmen
 - **Fact-locked threat cards:** All nine cards’ bullets enforced against real municipal/flight counts (`ai_analysis.py`).
 - **PDF dossier:** Unicode-safe generation via `_pdf_text()` in `backend/routers/pdf.py`.
 - **Public beta UI:** Navbar shows **Public beta**; side panels show **Scan summary** on wide screens (≥1550px) during results, else honest **Sponsored / Ad space** placeholders.
-- **Results UX polish:** carousel dot nav (proximity + threat), hidden carousel scrollbars, 311 breakdown chip, flight empty-state copy, logistics distance nowrap.
+- **Results UX polish:** carousel dot nav (proximity + threat), hidden carousel scrollbars, **banner_driver** breakdown chip (not 311-only), flight panel gating + simplified copy, logistics distance nowrap, larger proximity emojis, taller map, tighter map→flight spacing, results page margin polish.
+- **Flight exposure NYC-relative gating:** `show_flight_feature` + comparative percentiles (`flight_exposure.py`); color-coded NYC comparison badge (`flightExposureDisplay.ts`).
+- **Wellness banner drivers:** `banner_driver` ranks area safety, noise, 311, permits, evictions by relative elevation within ~2 mi (`threat_card_layout.py` + `bannerDriver.ts`).
+- **Threat card brand colors (Option 3, local):** slate default + rose border on elevated only; 3px borders in `ThreatCarousel.tsx` — pending commit.
 - **Server-rendered footer:** `Footer.tsx` for dynamic copyright year.
 - **ESLint:** `frontend/.eslintrc.json` extends `next/core-web-vitals`.
 - **Flight exposure NYC night window:** `America/New_York` 10 PM–7 AM in `flight_exposure.py`.
@@ -853,23 +865,30 @@ Best-effort metadata (when present): `median_altitude_ft`, `closest_miles`, `sam
 
 #### Flight Activity UI (current)
 
-Under the map, the **Flight Activity** block includes:
+Flight noise UI is **gated**: map flight panel, flight threat card, and exposure chips appear only when **`flight_exposure.show_flight_feature`** is true — i.e. enough ADS-B samples **and** exposure materially above NYC baselines (`flight_exposure.py`). Most addresses hide flight UI by design.
 
-- Summary chips (when exposure is available): **Night `/hr`**, **Day `/hr`**, **Typical altitude**, **Data quality**
+When shown, under the map:
+
+- **Slim renter-facing panel** (`flightExposureDisplay.ts`): summary sentence, overnight/daytime frequency labels, optional low-altitude note, NYC comparison badge (color tiers: rose/amber = above average, slate = around average, green = below)
+- Summary chips: **Night `/hr`**, **Day `/hr`**, **Typical altitude**, **Data quality**
 - Track chips (horizontal scroll): label + `~altitude ft` + `closest mi` + “seen Xm ago” when `last_seen_utc` exists (`live_adsb`)
 
 Users do **not** need to understand “ADS‑B” in product copy; backend logs and docs may still say ADS‑B for engineers.
 
+**Local preview override:** `FLIGHT_UI_PREVIEW=true` in `backend/.env` forces the flight panel on for UI work — **do not commit**; production uses real gating only.
+
 ### Flight exposure score (prototype)
 
-The backend now returns an optional `flight_exposure` field on the scan response:
+The backend returns an optional `flight_exposure` field on the scan response:
 
-- `night_overflights_per_hour`
-- `day_overflights_per_hour`
-- `typical_altitude_ft`
+- `night_overflights_per_hour`, `day_overflights_per_hour`
+- `typical_altitude_ft`, `trend` (`stable` | `variable`)
 - `data_quality` (`good` | `sparse` | `unavailable`)
+- **NYC-relative scoring:** `night_percentile`, `day_percentile`, `combined_percentile`, `elevation_level` (`typical` | `elevated` | `high` | `unavailable`)
+- **`show_flight_feature`** — `true` only when data is good enough and percentiles exceed show thresholds (drives map panel + `flight_path` threat card visibility)
+- `headline`, `detail`, `observation_days`, `radius_miles`, `sample_count`
 
-Important: this prototype uses Supabase storage; if Supabase is unreachable or ingestion isn’t running, exposure returns **`data_quality="unavailable"`** and the UI shows **“Exposure: unavailable”**.
+Important: this prototype uses Supabase storage; if Supabase is unreachable or ingestion isn’t running, exposure returns **`data_quality="unavailable"`** and flight UI stays hidden.
 
 **Night/day window:** `flight_exposure.py` uses **`America/New_York`** local time — **10 PM–7 AM** counts as night (renter-facing).
 
@@ -960,16 +979,16 @@ python -m jobs.daily_refresh
 - **Top dining within 2 miles (live):** `/scan` returns `dining[]` — top 4 ranked restaurants/bars merged into the logistics/proximity bar.
 - **Nearby municipal radius:** true Haversine radius is **2 miles** (`SCAN_RADIUS_MILES`, default **2**), with widened bbox prefilter + higher fetch caps to reduce premature truncation in dense areas
 - **311 sewer / water labels:** map zone and swarm pin labels now use NYC 311 descriptors to classify the issue while keeping visible names short, e.g. **Sewer Odor**, **Sewer Backup**, **Drain Blockage**, **Water Quality Issue**, **Water Leak**, or **Water Pressure**
-- **Fact-locked threat cards:** all nine cards’ bullets match municipal/flight counts; card-specific bottom lines; data-driven border colors
+- **Fact-locked threat cards:** all nine cards’ bullets match municipal/flight counts; card-specific bottom lines; **brand-accent** border colors (slate + rose on elevated)
 - **Wellness score v2 + two-phase scan:** plain labels, deferred Gemini (`f918277`); faster perceived load
-- **Results UX polish:** carousel dots, 311 breakdown chip, flight empty-state, side scan summary, logistics distance fix
+- **Results UX polish:** carousel dots, banner driver breakdown chip, flight gating + panel, side scan summary, logistics distance fix, map height + spacing
 - **Server-rendered footer:** dynamic copyright year (`c85136a`)
 - **PDF dossier:** Unicode-safe (`backend/routers/pdf.py`); download via **Download PDF Dossier** on results page
 - **No synthetic flight fallback in `auto`:** empty flight paths when no ADS-B samples (not static corridors)
 - **Production CORS:** `FRONTEND_URL=https://dwellsense.vercel.app` on Railway
 - **Public beta chrome:** navbar badge; scan summary / honest side-ad placeholders; server-rendered footer; footer links to NYC Open Data
 
-**Production verification (June 2026, post-`f918277` / `c85136a`):** hard-refresh `https://dwellsense.vercel.app`, run a new scan (e.g. Crown Heights). Expect plain wellness labels (**Average**, not legacy jargon), **`gemini_status: "pending"`** + **`bullets_token`** on the first `/api/scan` response, then **`gemini_status: "ok"`** from `/api/scan/bullets`; carousel dot nav; optional **See 311 breakdown →** chip when 311 volume is high; footer **© 2026**.
+**Production verification (June 2026, post-`7cfcaa8`):** hard-refresh `https://dwellsense.vercel.app`, run a new scan. Expect **`banner_driver`**-aware breakdown chip (not 311-only); flight panel **hidden** on typical blocks; flight panel + rose/amber badge on elevated exposure (e.g. East New York / JFK-adjacent); larger proximity emojis and taller map; deferred Gemini flow unchanged. Threat **Option 3** brand card colors are **local only** until committed.
 
 **Ongoing / decisions:**
 
@@ -983,6 +1002,19 @@ python -m jobs.daily_refresh
 ---
 
 ## Recent changelog (high-signal)
+
+### June 2026 — flight gating, banner drivers, results polish (`9503dfd` … `7cfcaa8`, live on production)
+
+- **Flight exposure gating (`9503dfd`):** NYC-relative percentiles + `show_flight_feature`; hide flight panel and `flight_path` card for typical blocks.
+- **Flight panel (`b965db4`, `bc160ed`):** slimmer renter copy; `flightExposureDisplay.ts` summary + color-coded NYC comparison badge.
+- **Wellness banner (`840569c`, `462d97c`, `ecb05e0`, `9b8ffae`):** `banner_driver` field; purple chip scrolls to matching threat card (area safety, noise, 311, permits, evictions); drivers ranked by relative elevation within ~2 mi.
+- **Proximity + map UX (`0bf3497`, `b0762de`, `82b4eb9`, `cf11ff8`, `7cfcaa8`):** larger proximity emojis; taller map + bigger section headers; flight block flush under map; results page spacing/margin polish.
+
+### June 2026 — threat card brand colors (Option 3, local only)
+
+- **`resolve_card_colors`:** neutral slate cards; rose border (`#e11d48`) only on elevated signals (evictions, crime/police, 311 ≥ 200, flight path when shown).
+- **`ThreatCarousel.tsx`:** 3px left border.
+- **Cache bust:** `ai_analysis.py` → **`2026-06-22-threat-brand-v1`**. Replaced Option 1 (slate/amber/rose tiers).
 
 ### June 2026 — wellness v2, two-phase scan, UX polish (`f918277`, `c85136a`)
 
@@ -1018,4 +1050,4 @@ python -m jobs.daily_refresh
 
 ---
 
-*Last updated: **June 2026** — wellness v2 scoring, two-phase deferred Gemini scan, results UX polish (carousel dots, 311 chip, scan summary, flight empty-state), server-rendered footer, and production verification notes.*
+*Last updated: **June 2026** — threat card Option 3 brand colors (local pending commit).*

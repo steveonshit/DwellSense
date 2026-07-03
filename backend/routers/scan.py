@@ -43,6 +43,9 @@ def _threat_cards_from_ai(ai_result: dict) -> list[ThreatCard]:
             bullets = card.get("bullets")
             if not isinstance(bullets, list):
                 bullets = []
+            sev = str(card.get("severity_level", "quiet"))
+            if sev not in ("quiet", "watch", "elevated"):
+                sev = "quiet"
             threat_cards.append(
                 ThreatCard(
                     id=str(card.get("id", "")),
@@ -52,6 +55,7 @@ def _threat_cards_from_ai(ai_result: dict) -> list[ThreatCard]:
                     border_color=str(card.get("border_color", "")),
                     text_color=str(card.get("text_color", "")),
                     bullets=[str(b) for b in bullets],
+                    severity_level=sev,
                 )
             )
         except Exception:

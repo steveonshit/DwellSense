@@ -76,72 +76,72 @@ CARD_SPECS: list[dict[str, Any]] = [
         "emoji": "🏃‍♂️",
         "title": "TENANT CHURN",
         "subtitle": "Historical turnover data from NYC court records.",
-        "border_color": "#f43f5e",
-        "text_color": "#fda4af",
+        "border_color": "#64748b",
+        "text_color": "#94a3b8",
     },
     {
         "id": "police_calls",
         "emoji": "🚓",
         "title": "POLICE CALLS",
         "subtitle": "NYPD dispatch activity in the area.",
-        "border_color": "#3b82f6",
-        "text_color": "#93c5fd",
+        "border_color": "#64748b",
+        "text_color": "#94a3b8",
     },
     {
         "id": "area_safety",
         "emoji": "🛡️",
         "title": "AREA SAFETY",
         "subtitle": "Property and violent crime density.",
-        "border_color": "#14b8a6",
-        "text_color": "#5eead4",
+        "border_color": "#64748b",
+        "text_color": "#94a3b8",
     },
     {
         "id": "tenant_warnings",
         "emoji": "🗣️",
         "title": "TENANT WARNINGS",
         "subtitle": "HPD violation data not ingested; verify on NYC HPD portal.",
-        "border_color": "#d946ef",
-        "text_color": "#f0abfc",
+        "border_color": "#64748b",
+        "text_color": "#94a3b8",
     },
     {
         "id": "demolitions",
         "emoji": "🚧",
         "title": "CONSTRUCTION & DEMOLITIONS",
         "subtitle": "DOB active permits and 311 building complaints.",
-        "border_color": "#f97316",
-        "text_color": "#fdba74",
+        "border_color": "#64748b",
+        "text_color": "#94a3b8",
     },
     {
         "id": "noise_schedule",
         "emoji": "🚛",
         "title": "NOISE SCHEDULE",
         "subtitle": "Commercial and municipal noise sources.",
-        "border_color": "#eab308",
-        "text_color": "#fde047",
+        "border_color": "#64748b",
+        "text_color": "#94a3b8",
     },
     {
         "id": "flight_path",
         "emoji": "✈️",
         "title": "FLIGHT NOISE",
         "subtitle": "Aircraft exposure vs typical NYC blocks (ADS-B).",
-        "border_color": "#06b6d4",
-        "text_color": "#67e8f9",
+        "border_color": "#64748b",
+        "text_color": "#94a3b8",
     },
     {
         "id": "reports_311",
         "emoji": "🐀",
         "title": "311 REPORTS",
         "subtitle": "City service complaints from neighbors.",
-        "border_color": "#a855f7",
-        "text_color": "#d8b4fe",
+        "border_color": "#64748b",
+        "text_color": "#94a3b8",
     },
     {
         "id": "oven_effect",
         "emoji": "☀️",
         "title": "OVEN EFFECT",
         "subtitle": "Sun exposure and AC cost risk.",
-        "border_color": "#ef4444",
-        "text_color": "#fca5a5",
+        "border_color": "#64748b",
+        "text_color": "#94a3b8",
     },
 ]
 
@@ -173,47 +173,47 @@ class CardChromeContext:
     show_flight_feature: bool = False
 
 
-def resolve_card_colors(card_id: str, ctx: CardChromeContext) -> tuple[str, str]:
-    """Border + subtitle colors reflect whether this card's primary signal is elevated."""
-    calm_blue = ("#3b82f6", "#93c5fd")
-    calm_teal = ("#14b8a6", "#5eead4")
-    calm_slate = ("#64748b", "#94a3b8")
-    good_green = ("#22c55e", "#86efac")
-    warn_amber = ("#f59e0b", "#fcd34d")
-    alert_rose = ("#f43f5e", "#fda4af")
-    alert_orange = ("#f97316", "#fdba74")
-    alert_purple = ("#a855f7", "#d8b4fe")
-    alert_cyan = ("#06b6d4", "#67e8f9")
-    alert_yellow = ("#eab308", "#fde047")
-    alert_red = ("#ef4444", "#fca5a5")
-    calm_purple = ("#7c3aed", "#c4b5fd")
+# Muted severity palette — matches wellness banner: emerald (clear) / amber (watch) / rose (elevated).
+_SEVERITY_CHROME: dict[str, tuple[str, str]] = {
+    "quiet": ("#059669", "#6ee7b7"),
+    "watch": ("#d97706", "#fbbf24"),
+    "elevated": ("#f43f5e", "#fda4af"),
+}
 
+
+def _card_severity(card_id: str, ctx: CardChromeContext) -> str:
+    """Return quiet | watch | elevated for this card's primary signal."""
     if card_id == "high_churn":
-        return alert_rose if ctx.eviction_count > 0 else good_green
+        return "elevated" if ctx.eviction_count > 0 else "quiet"
     if card_id == "police_calls":
-        return alert_rose if ctx.crime_count > 0 else calm_blue
+        return "elevated" if ctx.crime_count > 0 else "quiet"
     if card_id == "area_safety":
-        return warn_amber if ctx.crime_count > 0 else calm_teal
+        return "watch" if ctx.crime_count > 0 else "quiet"
     if card_id == "tenant_warnings":
-        return calm_purple
+        return "quiet"
     if card_id == "demolitions":
-        return alert_orange if (ctx.permit_count > 0 or ctx.construction_311_count > 0) else calm_slate
+        has_activity = ctx.permit_count > 0 or ctx.construction_311_count > 0
+        return "watch" if has_activity else "quiet"
     if card_id == "noise_schedule":
-        return alert_yellow if ctx.noise_count > 0 else calm_slate
+        return "watch" if ctx.noise_count > 0 else "quiet"
     if card_id == "flight_path":
         if not ctx.show_flight_feature:
-            return calm_slate
-        return alert_cyan if ctx.has_flight_path else warn_amber
+            return "quiet"
+        return "elevated" if ctx.has_flight_path else "watch"
     if card_id == "reports_311":
         if ctx.reports_count >= _HIGH_311_REPORTS_THRESHOLD:
-            return alert_purple
-        return calm_purple if ctx.reports_count > 0 else calm_slate
+            return "elevated"
+        if ctx.reports_count > 0:
+            return "watch"
+        return "quiet"
     if card_id == "oven_effect":
-        return alert_red
-    spec = next((c for c in CARD_SPECS if c["id"] == card_id), None)
-    if spec:
-        return spec["border_color"], spec["text_color"]
-    return calm_slate
+        return "quiet"
+    return "quiet"
+
+
+def resolve_card_colors(card_id: str, ctx: CardChromeContext) -> tuple[str, str]:
+    """Border + subtitle colors from muted severity tier."""
+    return _SEVERITY_CHROME[_card_severity(card_id, ctx)]
 
 
 def _percentile_from_count(
@@ -664,5 +664,12 @@ def cards_from_specs_and_bullets(
         while len(b) < 3:
             b.append("")
         border_color, text_color = resolve_card_colors(cid, ctx)
-        out.append({**spec, "border_color": border_color, "text_color": text_color, "bullets": b})
+        severity = _card_severity(cid, ctx)
+        out.append({
+            **spec,
+            "border_color": border_color,
+            "text_color": text_color,
+            "severity_level": severity,
+            "bullets": b,
+        })
     return out

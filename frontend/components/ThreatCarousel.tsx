@@ -3,6 +3,7 @@
 import { useRef } from "react";
 import { ThreatCard } from "@/lib/types";
 import { useCarouselScroll } from "@/lib/carouselScroll";
+import { threatSeverityLabel, threatSeverityStyle } from "@/lib/threatCardSeverity";
 import CarouselDots from "./CarouselDots";
 
 interface Props {
@@ -42,29 +43,39 @@ export default function ThreatCarousel({ cards, bulletsRefreshing = false }: Pro
       </div>
 
       <div ref={sliderRef} className="horizontal-scroll-container hide-scrollbar" id="stats-slider">
-        {cards.map((card, i) => (
-          <div
-            key={card.id}
-            id={`threat-card-${card.id}`}
-            className="stat-card bg-slate-800 p-6 md:p-8 rounded-3xl shadow-xl hover:bg-slate-700 transition-colors"
-            style={{
-              borderLeft: `10px solid ${card.border_color}`,
-              paddingRight: i === cards.length - 1 ? "2rem" : undefined,
-            }}
-          >
-            <h3 className="text-xl md:text-2xl font-black text-white mb-2 uppercase">
-              {card.emoji} {card.title}
-            </h3>
-            <p className="font-bold mb-4 text-sm md:text-base" style={{ color: card.text_color }}>
-              {card.subtitle}
-            </p>
-            <ul className="list-disc pl-5 text-slate-300 text-xs md:text-sm space-y-2">
-              {card.bullets.map((b, j) => (
-                <li key={j} dangerouslySetInnerHTML={{ __html: b }} />
-              ))}
-            </ul>
-          </div>
-        ))}
+        {cards.map((card, i) => {
+          const severity = threatSeverityStyle(card);
+          return (
+            <div
+              key={card.id}
+              id={`threat-card-${card.id}`}
+              className={`stat-card p-6 md:p-8 rounded-3xl shadow-xl transition-colors ${severity.card}`}
+              style={{
+                borderLeft: `${severity.borderWidth}px solid ${card.border_color}`,
+                paddingRight: i === cards.length - 1 ? "2rem" : undefined,
+              }}
+            >
+              <div className="flex items-start justify-between gap-3 mb-2">
+                <h3 className="text-xl md:text-2xl font-black text-white uppercase min-w-0">
+                  {card.emoji} {card.title}
+                </h3>
+                <span
+                  className={`shrink-0 text-[10px] md:text-xs font-black uppercase tracking-wider px-2 py-1 rounded-full border ${severity.badge}`}
+                >
+                  {threatSeverityLabel(card)}
+                </span>
+              </div>
+              <p className="font-bold mb-4 text-sm md:text-base" style={{ color: card.text_color }}>
+                {card.subtitle}
+              </p>
+              <ul className="list-disc pl-5 text-slate-300 text-xs md:text-sm space-y-2">
+                {card.bullets.map((b, j) => (
+                  <li key={j} dangerouslySetInnerHTML={{ __html: b }} />
+                ))}
+              </ul>
+            </div>
+          );
+        })}
       </div>
     </div>
   );

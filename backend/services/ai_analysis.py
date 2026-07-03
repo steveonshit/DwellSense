@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 # Bump this when bullet formatting / merge rules change so in-memory caches don't
 # serve stale card text across deploys.
-_ANALYSIS_CACHE_VERSION = "2026-06-22-banner-driver-v1"
+_ANALYSIS_CACHE_VERSION = "2026-07-03-threat-quiet-emerald-v1"
 
 _PENDING_BULLETS_TTL_SEC = 300
 
