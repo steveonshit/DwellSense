@@ -137,4 +137,6 @@ export interface ScanResult {
   gemini_status?: string | null;
   gemini_latency_ms?: number | null;
   bullets_token?: string | null;
+  /** Token for full raw-data PDF dossier (30 min TTL). */
+  dossier_token?: string | null;
 }

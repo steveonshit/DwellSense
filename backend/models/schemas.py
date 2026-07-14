@@ -131,6 +131,16 @@ class MapData(BaseModel):
     flight_path: FlightPath | None = None
 
 
+class PdfDossierRequest(BaseModel):
+    dossier_token: str
+    danger_score: int
+    risk_level: Literal["LOW", "MODERATE", "HIGH", "EXTREME"] = "MODERATE"
+    risk_label: str
+    risk_description: str
+    banner_driver: str | None = None
+    threat_cards: list[ThreatCard]
+
+
 class ScanResponse(BaseModel):
     address: str
     formatted_address: str
@@ -159,3 +169,5 @@ class ScanResponse(BaseModel):
     gemini_error_detail: str | None = None
     # Present when defer_gemini=true and Gemini bullets were not awaited on /scan.
     bullets_token: str | None = None
+    # Token for PDF dossier raw-data lookup (30 min TTL, in-memory).
+    dossier_token: str | None = None

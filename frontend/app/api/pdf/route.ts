@@ -21,7 +21,14 @@ export async function POST(req: NextRequest) {
     });
 
     if (!backendRes.ok) {
-      return NextResponse.json({ error: "PDF generation failed" }, { status: 500 });
+      let detail = "PDF generation failed";
+      try {
+        const err = await backendRes.json();
+        detail = err.detail || err.error || detail;
+      } catch {
+        /* ignore */
+      }
+      return NextResponse.json({ error: detail }, { status: backendRes.status });
     }
 
     const pdfBuffer = await backendRes.arrayBuffer();
@@ -29,7 +36,7 @@ export async function POST(req: NextRequest) {
       status: 200,
       headers: {
         "Content-Type": "application/pdf",
-        "Content-Disposition": "attachment; filename=DwellSense-Report.pdf",
+        "Content-Disposition": "attachment; filename=DwellSense-Full-Data-Report.pdf",
       },
     });
   } catch {

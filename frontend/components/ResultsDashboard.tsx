@@ -59,23 +59,39 @@ export default function ResultsDashboard({ result, onReset, bulletsRefreshing = 
   }, []);
 
   const handleDownloadPdf = async () => {
+    if (!result.dossier_token) {
+      alert("PDF dossier unavailable — re-run the scan to generate a fresh report.");
+      return;
+    }
     setPdfLoading(true);
     try {
       const res = await fetch("/api/pdf", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(result),
+        body: JSON.stringify({
+          dossier_token: result.dossier_token,
+          danger_score: result.danger_score,
+          risk_level: result.risk_level,
+          risk_label: result.risk_label,
+          risk_description: result.risk_description,
+          banner_driver: result.banner_driver ?? null,
+          threat_cards: result.threat_cards,
+        }),
       });
-      if (!res.ok) throw new Error("PDF generation failed");
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || err.detail || "PDF generation failed");
+      }
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `DwellSense-Report-${result.formatted_address.replace(/[^a-z0-9]/gi, "_")}.pdf`;
+      a.download = `DwellSense-Full-Data-Report-${result.formatted_address.replace(/[^a-z0-9]/gi, "_")}.pdf`;
       a.click();
       URL.revokeObjectURL(url);
-    } catch {
-      alert("PDF download failed. Please try again.");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "PDF download failed. Please try again.";
+      alert(msg);
     } finally {
       setPdfLoading(false);
     }
@@ -110,10 +126,10 @@ export default function ResultsDashboard({ result, onReset, bulletsRefreshing = 
           <div className="flex flex-col sm:flex-row gap-4 fade-in" style={{ animationDelay: "0.4s" }}>
           <button
             onClick={handleDownloadPdf}
-            disabled={pdfLoading}
+            disabled={pdfLoading || bulletsRefreshing}
             className="flex-1 bg-slate-100 text-slate-900 hover:bg-white disabled:opacity-60 font-black text-lg py-5 rounded-xl transition-colors shadow-lg border-2 border-black uppercase tracking-widest flex items-center justify-center gap-2"
           >
-            {pdfLoading ? "⏳ Generating..." : "⬇️ Download PDF Dossier"}
+            {pdfLoading ? "⏳ Generating..." : bulletsRefreshing ? "⏳ Refining summaries…" : "⬇️ Download Full Report"}
           </button>
           <button
             onClick={onReset}

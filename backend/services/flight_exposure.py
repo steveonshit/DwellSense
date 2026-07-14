@@ -130,6 +130,89 @@ def _haversine_miles(lat1: float, lng1: float, lat2: float, lng2: float) -> floa
     return 2 * r * math.asin(min(1.0, math.sqrt(a)))
 
 
+def fetch_raw_adsb_samples(
+    coord: Coordinate,
+    *,
+    days: int | None = None,
+    radius_miles: float | None = None,
+    max_alt_ft: int = 10000,
+) -> list[dict]:
+    """Raw ADS-B rows in scan radius for dossier PDF (fail-open: [])."""
+    try:
+        days_val = max(1, min(30, int(os.getenv("EXPOSURE_DAYS", str(days or 7)))))
+    except ValueError:
+        days_val = 7
+
+    default_radius = get_scan_radius_miles()
+    if radius_miles is not None:
+        default_radius = radius_miles
+    try:
+        radius_val = max(
+            0.25,
+            min(10.0, float(os.getenv("EXPOSURE_RADIUS_MILES", str(default_radius)))),
+        )
+    except ValueError:
+        radius_val = get_scan_radius_miles()
+
+    try:
+        supabase = _get_client()
+    except Exception:
+        return []
+
+    try:
+        since = datetime.now(timezone.utc) - timedelta(days=days_val)
+        since_iso = since.isoformat()
+
+        dlat = radius_val / 69.0
+        dlng = radius_val / (69.0 * max(0.2, math.cos(math.radians(coord.lat))))
+        lat_min, lat_max = coord.lat - dlat, coord.lat + dlat
+        lng_min, lng_max = coord.lng - dlng, coord.lng + dlng
+
+        res = (
+            supabase.table("adsb_samples")
+            .select("observed_at,icao24,lat,lng,baro_alt_m,geo_alt_m,on_ground")
+            .gte("observed_at", since_iso)
+            .gte("lat", lat_min)
+            .lte("lat", lat_max)
+            .gte("lng", lng_min)
+            .lte("lng", lng_max)
+            .limit(5000)
+            .execute()
+        )
+        rows = getattr(res, "data", None) or []
+        out: list[dict] = []
+        for r in rows:
+            try:
+                lat = float(r["lat"])
+                lng = float(r["lng"])
+            except Exception:
+                continue
+            if _haversine_miles(coord.lat, coord.lng, lat, lng) > radius_val:
+                continue
+            if r.get("on_ground") is True:
+                continue
+            alt_m = r.get("geo_alt_m") if isinstance(r.get("geo_alt_m"), (int, float)) else r.get("baro_alt_m")
+            if isinstance(alt_m, (int, float)):
+                alt_ft = int(round(float(alt_m) * 3.28084))
+                if alt_ft > max_alt_ft:
+                    continue
+            out.append(
+                {
+                    "observed_at": r.get("observed_at"),
+                    "icao24": r.get("icao24"),
+                    "lat": lat,
+                    "lng": lng,
+                    "baro_alt_m": r.get("baro_alt_m"),
+                    "geo_alt_m": r.get("geo_alt_m"),
+                    "on_ground": r.get("on_ground"),
+                }
+            )
+        return out
+    except Exception:
+        logger.exception("fetch_raw_adsb_samples failed")
+        return []
+
+
 def compute_exposure(
     coord: Coordinate,
     *,

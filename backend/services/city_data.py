@@ -404,6 +404,7 @@ async def get_nearby_crime(coord: Coordinate) -> list[dict]:
                 "crime_type": r.get("ofns_desc", r.get("ky_cd", "UNKNOWN")),
                 "description": r.get("pd_desc", ""),
                 "occurred_at": r.get("cmplnt_fr_dt", ""),
+                "source_id": str(r.get("cmplnt_num") or ""),
             })
         except (KeyError, ValueError, TypeError):
             continue
@@ -450,6 +451,7 @@ async def get_nearby_311(coord: Coordinate) -> list[dict]:
                 "complaint_type": r.get("complaint_type", "UNKNOWN"),
                 "descriptor": r.get("descriptor", ""),
                 "created_at": r.get("created_date", ""),
+                "source_id": str(r.get("unique_key") or ""),
             })
         except (KeyError, ValueError):
             continue
@@ -497,13 +499,16 @@ async def get_nearby_permits(coord: Coordinate) -> list[dict]:
             lng = float(r.get("longitude") or 0)
             if not lat or not lng:
                 continue
+            job = str(r.get("job__") or "")
+            permit_type = str(r.get("permit_type") or r.get("permit_type_description") or "UNKNOWN")
             result.append({
                 "lat": lat,
                 "lng": lng,
-                "permit_type": r.get("permit_type", r.get("permit_type_description", "UNKNOWN")),
+                "permit_type": permit_type,
                 "permit_status": r.get("permit_status", "ISSUED"),
                 "job_description": r.get("job_description", r.get("work_type", "")),
                 "filing_date": r.get("filing_date", r.get("issuance_date", "")),
+                "source_id": f"{job}_{permit_type}" if job else "",
             })
         except (KeyError, ValueError, TypeError):
             continue
@@ -551,6 +556,7 @@ async def get_nearby_evictions(coord: Coordinate) -> list[dict]:
                 "lng": float(r["longitude"]),
                 "case_type": r.get("eviction_possession", "Residential"),
                 "filing_date": r.get("executed_date", ""),
+                "source_id": str(r.get("docket_number") or r.get("court_index_number") or ""),
             })
         except (KeyError, ValueError):
             continue

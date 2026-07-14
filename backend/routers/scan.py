@@ -6,8 +6,9 @@ Takes an address, runs all data lookups in parallel, and returns the full ScanRe
 import asyncio
 import logging
 from fastapi import APIRouter, HTTPException
+from datetime import datetime, timezone
 from models.schemas import ScanRequest, ScanResponse, MapData, ThreatCard, BulletsRequest, BulletsResponse
-from services import geocoding, city_data, places, flights, ai_analysis, flight_exposure, flight_preview
+from services import geocoding, city_data, places, flights, ai_analysis, flight_exposure, flight_preview, dossier_context
 from services.threat_card_layout import cards_from_specs_and_bullets, ordered_card_ids
 from services.city_data import (
     CRIME_FETCH_LIMIT,
@@ -93,16 +94,19 @@ async def scan(request: ScanRequest):
     permits_task = city_data.get_nearby_permits(coord)
     evictions_task = city_data.get_nearby_evictions(coord)
     logistics_task = places.get_logistics(coord)
-    dining_task = places.get_top_restaurants_bars(coord, limit=4)
+    dining_task = places.get_top_restaurants_bars(coord, limit=20)
+    adsb_task = asyncio.to_thread(flight_exposure.fetch_raw_adsb_samples, coord)
 
-    crime, reports_311, permits, evictions, logistics, dining = await asyncio.gather(
+    crime, reports_311, permits, evictions, logistics, dining_all, adsb_samples = await asyncio.gather(
         crime_task,
         reports_311_task,
         permits_task,
         evictions_task,
         logistics_task,
         dining_task,
+        adsb_task,
     )
+    dining = dining_all[:4]
 
     # Bbox queries are a prefilter; scoring uses a true 2mi Haversine radius by default.
     crime_capped = len(crime) >= CRIME_FETCH_LIMIT
@@ -195,6 +199,32 @@ async def scan(request: ScanRequest):
     else:
         emoji = risk_emoji_map.get(risk_level, "⚠️")
 
+    dossier_token = dossier_context.store_dossier(
+        dossier_context.DossierContext(
+            formatted_address=formatted_address,
+            coord_lat=coord.lat,
+            coord_lng=coord.lng,
+            scan_radius_miles=scan_radius_miles,
+            scanned_at=datetime.now(timezone.utc).isoformat(),
+            crime=crime,
+            reports_311=reports_311,
+            permits=permits,
+            evictions=evictions,
+            crime_capped=crime_capped,
+            reports_capped=reports_capped,
+            permits_capped=permits_capped,
+            evictions_capped=evictions_capped,
+            logistics=[c.model_dump() for c in logistics],
+            dining_candidates=[c.model_dump() for c in dining_all],
+            flight_paths=[p.model_dump() for p in flight_paths],
+            adsb_samples=adsb_samples,
+            flight_exposure=exposure.model_dump() if exposure else None,
+            map_swarm_shown=len(swarm),
+            map_swarm_total=swarm_total,
+            map_zones_count=len(zones),
+        )
+    )
+
     return ScanResponse(
         address=address,
         formatted_address=formatted_address,
@@ -216,6 +246,7 @@ async def scan(request: ScanRequest):
         gemini_error_kind=ai_result.get("gemini_error_kind"),
         gemini_error_detail=ai_result.get("gemini_error_detail"),
         bullets_token=ai_result.get("bullets_token"),
+        dossier_token=dossier_token,
     )
 
 
