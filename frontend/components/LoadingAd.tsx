@@ -85,16 +85,18 @@ export default function LoadingAd({ onComplete, isApiReady }: Props) {
             </span>
           )}
 
-          {showSkip && (
+          {showSkip && !isApiReady && (
+            <span className="text-white text-xs font-bold bg-slate-800 px-3 py-1.5 rounded border border-slate-700 inline-block animate-pulse">
+              Still scanning address…
+            </span>
+          )}
+
+          {showSkip && isApiReady && (
             <button
               onClick={handleSkip}
               className="text-white text-xs font-bold bg-slate-700 hover:bg-rose-600 px-3 py-1.5 rounded transition-colors cursor-pointer border border-slate-500 shadow-lg flex items-center gap-1"
             >
-              {skipped && !isApiReady ? (
-                <span className="animate-pulse">Loading data...</span>
-              ) : (
-                <>Skip Ad ⏭</>
-              )}
+              Skip Ad ⏭
             </button>
           )}
         </div>
@@ -118,11 +120,11 @@ export default function LoadingAd({ onComplete, isApiReady }: Props) {
           </p>
           <button
             type="button"
-            disabled={!showSkip}
+            disabled={!showSkip || !isApiReady}
             onClick={handleSkip}
             className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold py-2 px-6 rounded-lg transition-colors shadow-lg shadow-indigo-900/50"
           >
-            Get a Free Quote ↗
+            {!isApiReady && showSkip ? "Scanning…" : "Get a Free Quote ↗"}
           </button>
         </div>
       </div>

@@ -69,11 +69,13 @@ DwellSense/
 | Database | Supabase (Postgres) |
 | AI | Google Gemini (`gemini-2.5-flash` by default) for **bullets only**; card chrome + score in Python |
 | Maps / geo | Mapbox (geocoding + map), Google Places API (New), **Yelp Fusion API** (optional dining), Distance Matrix (if used) |
+| Auth | **Supabase Auth** — email + Google; thin `AuthUser.id` layer on the frontend; scans stay public |
 | Hosting | **Vercel** (frontend), **Railway** (backend) |
 
 ### Tech stack in plain English
 
 - **Next.js + React** is the website layer. It renders the landing page, address form, loading ad, score banner, logistics carousel (transit, grocery, **and top dining** in one bar), threat cards, map, pins, and flight visuals.
+- **Supabase Auth** owns identity (email + Google via `/sign-in` and `/sign-up`). The app only depends on a thin `AuthUser` (`id`, `email`) from `AuthProvider` / `useAuth` — easier to swap providers later. Navbar shows Sign in / Sign up or email + Sign out. Anonymous scans still work; account-bound **Saved Reports** is the next phase.
 - **Vercel** hosts the frontend and runs the small **Next.js API route** at `frontend/app/api/scan/route.ts`. That route is intentionally a server-side proxy so the browser does not need to know backend secrets or private URLs.
 - **Python + FastAPI** is the backend analysis engine. The main scan endpoint is `POST /scan` in `backend/routers/scan.py`.
 - **Railway** hosts the FastAPI backend. Railway owns the runtime for backend environment variables such as `MAPBOX_TOKEN`, `GOOGLE_MAPS_API_KEY`, `GEMINI_API_KEY`, `SUPABASE_URL`, and `SUPABASE_SERVICE_KEY`.
@@ -96,6 +98,7 @@ Use this when explaining the system in a 3–5 minute presentation:
 ### Short memorization version
 
 - **Frontend:** Next.js + React on Vercel.
+- **Auth:** Supabase Auth (sign-in / sign-up); scans remain public without login.
 - **Backend:** Python FastAPI on Railway.
 - **Data:** Supabase for NYC records and ADS-B samples.
 - **Map/geocoding:** Mapbox.
@@ -541,6 +544,8 @@ Expected: `4` and a real venue name (not an error).
 |----------|---------|
 | `NEXT_PUBLIC_MAPBOX_TOKEN` | Mapbox map (public by design) |
 | `BACKEND_URL` | Railway backend URL (e.g. `https://dwellsense-production.up.railway.app`) |
+| `NEXT_PUBLIC_SUPABASE_URL` | Supabase project URL (browser + SSR auth). Same project as backend municipal data. |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase **anon** key only (never the service_role key). |
 | `NEXT_PUBLIC_FLIGHT_PATH_GREAT_CIRCLE` | Optional. Default **`1`**. Display-only: densifies line segments along great-circle arcs so long 2-point routes do not render as screen-straight chords. |
 | `NEXT_PUBLIC_FLIGHT_PATH_GC_MIN_STEPS` | Optional. Default **8**. Minimum great-circle interpolation points per route leg. |
 | `NEXT_PUBLIC_FLIGHT_PATH_GC_MAX_STEPS` | Optional. Default **24**. Maximum great-circle interpolation points per route leg. |
@@ -643,6 +648,11 @@ This table stores raw ADS‑B position samples — individual aircraft observati
 | Next.js deferred bullets proxy | `frontend/app/api/scan/bullets/route.ts` |
 | Next.js PDF proxy | `frontend/app/api/pdf/route.ts` |
 | Home page shell + site font | `frontend/app/layout.tsx`, `frontend/tailwind.config.ts` |
+| Thin auth identity (`AuthUser`) | `frontend/lib/auth/types.ts`, `frontend/components/AuthProvider.tsx` (`useAuth`) |
+| Supabase browser / server / middleware | `frontend/lib/supabase/client.ts`, `server.ts`, `middleware.ts` |
+| Auth session middleware | `frontend/middleware.ts` (session refresh only; scans/PDF stay public) |
+| Sign-in / sign-up / OAuth callback | `frontend/app/sign-in/page.tsx`, `sign-up/page.tsx`, `auth/callback/route.ts` |
+| Navbar auth chrome | `frontend/components/Navbar.tsx` (Sign in / Sign up / Sign out) |
 | Scan + loading ad + deferred bullets (client) | `frontend/components/HomeClient.tsx` |
 | Site footer (server, dynamic copyright year) | `frontend/components/Footer.tsx` |
 | Results UI | `frontend/components/ResultsDashboard.tsx` |
@@ -769,7 +779,7 @@ When **`reports_count ≥ 200`** and **`crime_count < 8`**, the v2 311 adjustmen
 
 **Implemented:**
 
-- **Smaller Gemini ask:** Scoring and threat-card chrome live in Python; Gemini returns only **`bullets`** JSON — reduces latency vs the old full-card JSON.
+- **Supabase Auth (Phase 1):** email + Google via thin `AuthUser` / `useAuth`; `/sign-in`, `/sign-up`, `/auth/callback`; session middleware; scans/PDF stay public. Foundation for account-bound Saved Reports.
 - **Two-phase scan (production):** `defer_gemini` on `/scan` + **`POST /scan/bullets`** + frontend background refresh — users see map/score/template bullets before Gemini finishes.
 - **Wellness score v2:** plain-language labels (Terrible → Outstanding), gated top tiers, calibrated 311 adjustment (`threat_card_layout.py`).
 - **Top dining within 2 miles:** Yelp-first (optional key) + Google Places fallback; merged into `LogisticsCarousel` via `proximityCards.ts`.
@@ -797,6 +807,7 @@ When **`reports_count ≥ 200`** and **`crime_count < 8`**, the v2 311 adjustmen
 
 **Not yet implemented** (discussed direction):
 
+- **Saved Reports (Phase 2):** after Supabase Auth identity, persist full scan JSON per `AuthUser.id` and reopen from a Saved Reports page.
 - **HPD violations ingestion:** pull Housing Maintenance Code Violations into scan scoring / threat bullets (today the card is honest that HPD is not ingested; the **PDF** already deep-links address-filtered Open Data `wvxf-dwi5`).
 - **Alternative models:** If latency remains an issue even with deferred bullets, evaluate faster inference hosts (e.g. Groq) or other APIs — quality vs speed tradeoff.
 - **Dossier store durability:** `dossier_token` (like `bullets_token`) is in-memory on a single instance — multi-instance or restart loses PDF tokens until the user re-scans.
@@ -826,6 +837,7 @@ Below is a concise log of problems faced while connecting GitHub, Railway, Verce
 - **Deployment blocked / GitHub identity:** Private email or committer mismatch; resolved via **CLI deploy** (`npx vercel --prod`) and/or linking accounts.
 - **Path `frontend/frontend` error:** Vercel project had **Root Directory = `frontend`** while CLI ran from inside `frontend/` — doubled path. Fix: deploy from repo root with correct settings, or **new project** from `frontend/` without conflicting root.
 - **`BACKEND_URL` / `NEXT_PUBLIC_MAPBOX_TOKEN`:** Must be set in **Vercel → Project → Environment Variables** for Production (and Preview as needed).
+- **Supabase Auth:** Set `NEXT_PUBLIC_SUPABASE_URL` + `NEXT_PUBLIC_SUPABASE_ANON_KEY` on Vercel (Production + Preview) and in `frontend/.env.local`. In Supabase → Authentication → Providers enable **Email** and **Google**. Add redirect URLs `http://localhost:3000/auth/callback` and `https://dwellsense.vercel.app/auth/callback`. Do **not** put `SUPABASE_SERVICE_KEY` in the frontend. Do **not** protect `/api/scan` or `/api/pdf` — scans stay public.
 - **Redeploy vs new code:** Clicking **Redeploy** only rebuilds whatever source Vercel is currently connected to; it does **not** upload local changes from your laptop. If your Vercel project is using **CLI deploys** (`npx vercel --prod`), you must run the CLI again to ship changes. If you want push-to-deploy, connect the Git repo and ensure **Root Directory = `frontend`**.
 
 ### Backend behavior (production debugging)

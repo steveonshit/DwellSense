@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import Navbar from "@/components/Navbar";
 import HeroSection from "@/components/HeroSection";
 import LoadingAd from "@/components/LoadingAd";
 import ResultsDashboard from "@/components/ResultsDashboard";
@@ -110,8 +109,6 @@ export default function HomeClient() {
 
   return (
     <>
-      <Navbar />
-
       <main className="flex-1 w-full max-w-[1300px] mx-auto flex flex-col items-center px-1.5 sm:px-2 md:px-3 min-[1550px]:px-5 mt-4 relative z-10">
         {view === "hero" && (
           <>

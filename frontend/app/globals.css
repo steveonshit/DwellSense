@@ -9,14 +9,14 @@
 body {
   background-color: #0f172a;
   color: #f8fafc;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   overflow-x: hidden;
+  letter-spacing: -0.015em;
 }
 
 /* ── Animations ────────────────────────────────────────────────────────────── */
 .fade-in {
-  animation: fadeIn 0.8s ease-out forwards;
-  opacity: 0;
+  /* both: apply 0% keyframe before start; never leave opacity:0 if animation is disabled */
+  animation: fadeIn 0.8s ease-out both;
 }
 
 /* Opacity-only: a transformed ancestor breaks Mapbox Marker DOM positioning on hover. */
