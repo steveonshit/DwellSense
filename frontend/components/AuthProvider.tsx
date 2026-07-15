@@ -27,10 +27,19 @@ function toAuthUser(id: string, email: string | null | undefined): AuthUser {
   return { id, email: email ?? null };
 }
 
+function hasAuthEnv(): boolean {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  return Boolean(
+    url && anonKey && !url.includes("YOUR_") && !anonKey.includes("YOUR_"),
+  );
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [isLoaded, setIsLoaded] = useState(false);
-  const [isConfigured, setIsConfigured] = useState(false);
+  // NEXT_PUBLIC_* is inlined at build time — avoid a false "not configured" flash.
+  const [isConfigured, setIsConfigured] = useState(hasAuthEnv);
 
   useEffect(() => {
     let cancelled = false;

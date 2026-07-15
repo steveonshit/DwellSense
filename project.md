@@ -652,6 +652,8 @@ This table stores raw ADS‑B position samples — individual aircraft observati
 | Supabase browser / server / middleware | `frontend/lib/supabase/client.ts`, `server.ts`, `middleware.ts` |
 | Auth session middleware | `frontend/middleware.ts` (session refresh only; scans/PDF stay public) |
 | Sign-in / sign-up / OAuth callback | `frontend/app/sign-in/page.tsx`, `sign-up/page.tsx`, `auth/callback/route.ts` |
+| Forgot / update password | `frontend/app/forgot-password/page.tsx`, `update-password/page.tsx` |
+| Auth UI shell | `frontend/components/AuthShell.tsx` |
 | Navbar auth chrome | `frontend/components/Navbar.tsx` (Sign in / Sign up / Sign out) |
 | Scan + loading ad + deferred bullets (client) | `frontend/components/HomeClient.tsx` |
 | Site footer (server, dynamic copyright year) | `frontend/components/Footer.tsx` |
@@ -779,7 +781,7 @@ When **`reports_count ≥ 200`** and **`crime_count < 8`**, the v2 311 adjustmen
 
 **Implemented:**
 
-- **Supabase Auth (Phase 1):** email + Google via thin `AuthUser` / `useAuth`; `/sign-in`, `/sign-up`, `/auth/callback`; session middleware; scans/PDF stay public. Foundation for account-bound Saved Reports.
+- **Supabase Auth (Phase 1):** email + Google via thin `AuthUser` / `useAuth`; `/sign-in`, `/sign-up`, `/forgot-password`, `/update-password`, `/auth/callback` (cookies attached to redirect); resend confirmation; session middleware; scans/PDF stay public. **Production email requires custom SMTP (Resend + verified domain)** — built-in Supabase mail is not production-grade. Foundation for account-bound Saved Reports.
 - **Two-phase scan (production):** `defer_gemini` on `/scan` + **`POST /scan/bullets`** + frontend background refresh — users see map/score/template bullets before Gemini finishes.
 - **Wellness score v2:** plain-language labels (Terrible → Outstanding), gated top tiers, calibrated 311 adjustment (`threat_card_layout.py`).
 - **Top dining within 2 miles:** Yelp-first (optional key) + Google Places fallback; merged into `LogisticsCarousel` via `proximityCards.ts`.
@@ -837,7 +839,8 @@ Below is a concise log of problems faced while connecting GitHub, Railway, Verce
 - **Deployment blocked / GitHub identity:** Private email or committer mismatch; resolved via **CLI deploy** (`npx vercel --prod`) and/or linking accounts.
 - **Path `frontend/frontend` error:** Vercel project had **Root Directory = `frontend`** while CLI ran from inside `frontend/` — doubled path. Fix: deploy from repo root with correct settings, or **new project** from `frontend/` without conflicting root.
 - **`BACKEND_URL` / `NEXT_PUBLIC_MAPBOX_TOKEN`:** Must be set in **Vercel → Project → Environment Variables** for Production (and Preview as needed).
-- **Supabase Auth:** Set `NEXT_PUBLIC_SUPABASE_URL` + `NEXT_PUBLIC_SUPABASE_ANON_KEY` on Vercel (Production + Preview) and in `frontend/.env.local`. In Supabase → Authentication → Providers enable **Email** and **Google**. Add redirect URLs `http://localhost:3000/auth/callback` and `https://dwellsense.vercel.app/auth/callback`. Do **not** put `SUPABASE_SERVICE_KEY` in the frontend. Do **not** protect `/api/scan` or `/api/pdf` — scans stay public.
+- **Supabase Auth:** Set `NEXT_PUBLIC_SUPABASE_URL` + `NEXT_PUBLIC_SUPABASE_ANON_KEY` on Vercel (Production + Preview) and in `frontend/.env.local`. In Supabase → Authentication → Providers enable **Email** and **Google**. Keep **Confirm email** ON. Add redirect URLs `http://localhost:3000/auth/callback` and `https://dwellsense.vercel.app/auth/callback`; Site URL = `https://dwellsense.vercel.app`. **Custom SMTP required for production** (Supabase built-in mail often never reaches users): Resend → verify sending domain → Authentication → Email → SMTP (`smtp.resend.com`, port `465`, user `resend`, password = Resend API key, sender e.g. `noreply@YOUR_DOMAIN`). Raise auth email rate limits after SMTP is live. Do **not** put `SUPABASE_SERVICE_KEY` in the frontend. Do **not** protect `/api/scan` or `/api/pdf` — scans stay public.
+- **OAuth signed-in but still “logged out” on Vercel:** session cookies must be set on the `/auth/callback` redirect response (see `auth/callback/route.ts`). Redeploy after that fix.
 - **Redeploy vs new code:** Clicking **Redeploy** only rebuilds whatever source Vercel is currently connected to; it does **not** upload local changes from your laptop. If your Vercel project is using **CLI deploys** (`npx vercel --prod`), you must run the CLI again to ship changes. If you want push-to-deploy, connect the Git repo and ensure **Root Directory = `frontend`**.
 
 ### Backend behavior (production debugging)
