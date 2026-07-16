@@ -69,13 +69,13 @@ DwellSense/
 | Database | Supabase (Postgres) |
 | AI | Google Gemini (`gemini-2.5-flash` by default) for **bullets only**; card chrome + score in Python |
 | Maps / geo | Mapbox (geocoding + map), Google Places API (New), **Yelp Fusion API** (optional dining), Distance Matrix (if used) |
-| Auth | **Supabase Auth** — email + Google; thin `AuthUser.id` layer on the frontend; scans stay public |
+| Auth | **Supabase Auth** — email + Google; thin `AuthUser.id` layer on the frontend; scans stay public. **Auth emails** (confirm, reset) sent via **custom SMTP** in Supabase (default: **Resend**); not in app code. |
 | Hosting | **Vercel** (frontend), **Railway** (backend) |
 
 ### Tech stack in plain English
 
 - **Next.js + React** is the website layer. It renders the landing page, address form, loading ad, score banner, logistics carousel (transit, grocery, **and top dining** in one bar), threat cards, map, pins, and flight visuals.
-- **Supabase Auth** owns identity (email + Google via `/sign-in` and `/sign-up`). The app only depends on a thin `AuthUser` (`id`, `email`) from `AuthProvider` / `useAuth` — easier to swap providers later. Navbar shows Sign in / Sign up or email + Sign out. Anonymous scans still work; account-bound **Saved Reports** is the next phase.
+- **Supabase Auth** owns identity (email + Google via `/sign-in` and `/sign-up`). The app only depends on a thin `AuthUser` (`id`, `email`) from `AuthProvider` / `useAuth` — easier to swap auth providers later. Navbar shows Sign in / Sign up or email + Sign out. Anonymous scans still work; account-bound **Saved Reports** is the next phase. **Login emails** (confirm signup, password reset) are sent by **Supabase Auth** through a **custom SMTP** provider configured in the Supabase dashboard — DwellSense frontend/backend code does **not** call Resend (or any mail API) directly.
 - **Vercel** hosts the frontend and runs the small **Next.js API route** at `frontend/app/api/scan/route.ts`. That route is intentionally a server-side proxy so the browser does not need to know backend secrets or private URLs.
 - **Python + FastAPI** is the backend analysis engine. The main scan endpoint is `POST /scan` in `backend/routers/scan.py`.
 - **Railway** hosts the FastAPI backend. Railway owns the runtime for backend environment variables such as `MAPBOX_TOKEN`, `GOOGLE_MAPS_API_KEY`, `GEMINI_API_KEY`, `SUPABASE_URL`, and `SUPABASE_SERVICE_KEY`.
@@ -98,7 +98,7 @@ Use this when explaining the system in a 3–5 minute presentation:
 ### Short memorization version
 
 - **Frontend:** Next.js + React on Vercel.
-- **Auth:** Supabase Auth (sign-in / sign-up); scans remain public without login.
+- **Auth:** Supabase Auth (sign-in / sign-up / forgot-password); scans remain public without login. Production auth email via Supabase **custom SMTP** (Resend recommended).
 - **Backend:** Python FastAPI on Railway.
 - **Data:** Supabase for NYC records and ADS-B samples.
 - **Map/geocoding:** Mapbox.
@@ -574,6 +574,87 @@ Before implementing or verifying a feature, confirm **where** it should land:
 
 ---
 
+## Supabase Auth & production email
+
+Auth **identity** lives in Supabase + the thin frontend layer (`AuthProvider` / `useAuth`). Auth **email delivery** (signup confirmation, password reset) is a **Supabase dashboard** concern: enable **custom SMTP** and point it at a transactional email provider.
+
+### What DwellSense code does vs what Supabase does
+
+| Layer | Responsibility |
+|-------|----------------|
+| **Frontend** (`sign-in`, `sign-up`, `forgot-password`, `update-password`, `auth/callback`) | UI, `signUp` / `signInWithPassword` / `resetPasswordForEmail`, OAuth redirect, session cookies |
+| **Supabase Auth** | User records, confirm-email policy, magic links, token exchange |
+| **Custom SMTP provider** (e.g. Resend) | Actually delivers mail to inboxes |
+
+No Resend API key belongs in Vercel or Railway env for auth. Only Supabase SMTP settings need the mail provider credentials.
+
+### Why built-in Supabase mail is not production-grade
+
+Supabase’s default mailer is for development and light testing. For a real public site it is **unreliable**: strict rate limits, weak deliverability, and mail often never reaches users. **Do not** disable “Confirm email” as a workaround — use custom SMTP instead.
+
+### Default provider: Resend (decision)
+
+**Resend** is the recommended **starting** provider for DwellSense auth email:
+
+| Reason | Detail |
+|--------|--------|
+| **Fast setup** | Official Supabase + Resend integration path; SMTP docs are clear |
+| **Right volume** | Auth-only traffic (confirm + reset) is low; Resend free tier is sufficient early on |
+| **Deliverability** | Real SPF/DKIM on a **verified domain** — required for any provider anyway |
+| **Observability** | Bounce/complaint visibility in Resend dashboard |
+
+**Alternatives** (same architecture — change SMTP in Supabase only):
+
+| Provider | When to consider |
+|----------|------------------|
+| **Postmark** | Deliverability-first; slightly more setup |
+| **Amazon SES** | High volume / cost optimization; more AWS ops |
+| **SendGrid / Brevo** | Team already on that stack |
+
+### Switching providers later (easy)
+
+Auth email is **not** coupled to Resend in application code. To switch:
+
+1. Create account with the new provider and verify the same (or new) sending domain.
+2. In **Supabase → Authentication → Email → SMTP**, replace host, port, username, password, and sender address.
+3. Send a test signup / reset; check deliverability.
+
+No frontend redeploy required for an SMTP swap. **Future product email** (marketing, receipts, “scan ready” notifications) should use a **separate** mail path (e.g. backend adapter + provider API) — keep **auth** on Supabase SMTP so identity stays simple.
+
+### Domain verification (required)
+
+You cannot send production auth mail from `@dwellsense.vercel.app`. You need a **domain you own** (e.g. `dwellsense.com`):
+
+1. Add the domain in Resend (or chosen provider).
+2. Add the DNS records they give you (SPF, DKIM) at your registrar/DNS host (Cloudflare, Namecheap, etc.).
+3. Wait until the provider marks the domain **verified**.
+4. Use a sender like `noreply@yourdomain.com` in Supabase SMTP.
+
+### Production auth checklist
+
+1. **Vercel:** `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` (Production + Preview).
+2. **Supabase → Providers:** Email + Google enabled; **Confirm email** ON.
+3. **Supabase → URL Configuration:** Site URL `https://dwellsense.vercel.app`; redirect URLs `https://dwellsense.vercel.app/auth/callback` and `http://localhost:3000/auth/callback`.
+4. **Resend:** verify domain → copy SMTP credentials.
+5. **Supabase → Authentication → Email → SMTP:** host `smtp.resend.com`, port `465`, user `resend`, password = Resend API key, sender = `noreply@YOUR_DOMAIN`.
+6. **Supabase → Rate limits:** raise auth email limits after SMTP is live (default ~30/hour is too low for growth).
+7. **Google OAuth:** redirect URI `https://<project-ref>.supabase.co/auth/v1/callback` in Google Cloud Console.
+8. **Never** put `SUPABASE_SERVICE_KEY` in the frontend. **Do not** protect `/api/scan` or `/api/pdf` — scans stay public.
+
+### Auth routes (implemented)
+
+| Route | Purpose |
+|-------|---------|
+| `/sign-in` | Email + Google sign-in |
+| `/sign-up` | Email + Google sign-up; resend confirmation |
+| `/forgot-password` | Password reset email |
+| `/update-password` | Set new password after reset link |
+| `/auth/callback` | OAuth / email-link callback; session cookies attached to redirect response |
+
+See also **Issues Encountered → Vercel → Supabase Auth** for OAuth cookie and deploy gotchas.
+
+---
+
 ## Deployment Summary
 
 ### GitHub
@@ -653,6 +734,7 @@ This table stores raw ADS‑B position samples — individual aircraft observati
 | Auth session middleware | `frontend/middleware.ts` (session refresh only; scans/PDF stay public) |
 | Sign-in / sign-up / OAuth callback | `frontend/app/sign-in/page.tsx`, `sign-up/page.tsx`, `auth/callback/route.ts` |
 | Forgot / update password | `frontend/app/forgot-password/page.tsx`, `update-password/page.tsx` |
+| Email validation (auth forms) | `frontend/lib/auth/email.ts` |
 | Auth UI shell | `frontend/components/AuthShell.tsx` |
 | Navbar auth chrome | `frontend/components/Navbar.tsx` (Sign in / Sign up / Sign out) |
 | Scan + loading ad + deferred bullets (client) | `frontend/components/HomeClient.tsx` |
@@ -781,7 +863,7 @@ When **`reports_count ≥ 200`** and **`crime_count < 8`**, the v2 311 adjustmen
 
 **Implemented:**
 
-- **Supabase Auth (Phase 1):** email + Google via thin `AuthUser` / `useAuth`; `/sign-in`, `/sign-up`, `/forgot-password`, `/update-password`, `/auth/callback` (cookies attached to redirect); resend confirmation; session middleware; scans/PDF stay public. **Production email requires custom SMTP (Resend + verified domain)** — built-in Supabase mail is not production-grade. Foundation for account-bound Saved Reports.
+- **Supabase Auth (Phase 1):** email + Google via thin `AuthUser` / `useAuth`; `/sign-in`, `/sign-up`, `/forgot-password`, `/update-password`, `/auth/callback` (cookies attached to redirect); resend confirmation; session middleware; scans/PDF stay public. **Production auth email:** custom SMTP in Supabase ( **Resend** default; swappable without app code). See **Supabase Auth & production email**. Foundation for account-bound Saved Reports.
 - **Two-phase scan (production):** `defer_gemini` on `/scan` + **`POST /scan/bullets`** + frontend background refresh — users see map/score/template bullets before Gemini finishes.
 - **Wellness score v2:** plain-language labels (Terrible → Outstanding), gated top tiers, calibrated 311 adjustment (`threat_card_layout.py`).
 - **Top dining within 2 miles:** Yelp-first (optional key) + Google Places fallback; merged into `LogisticsCarousel` via `proximityCards.ts`.
@@ -839,7 +921,7 @@ Below is a concise log of problems faced while connecting GitHub, Railway, Verce
 - **Deployment blocked / GitHub identity:** Private email or committer mismatch; resolved via **CLI deploy** (`npx vercel --prod`) and/or linking accounts.
 - **Path `frontend/frontend` error:** Vercel project had **Root Directory = `frontend`** while CLI ran from inside `frontend/` — doubled path. Fix: deploy from repo root with correct settings, or **new project** from `frontend/` without conflicting root.
 - **`BACKEND_URL` / `NEXT_PUBLIC_MAPBOX_TOKEN`:** Must be set in **Vercel → Project → Environment Variables** for Production (and Preview as needed).
-- **Supabase Auth:** Set `NEXT_PUBLIC_SUPABASE_URL` + `NEXT_PUBLIC_SUPABASE_ANON_KEY` on Vercel (Production + Preview) and in `frontend/.env.local`. In Supabase → Authentication → Providers enable **Email** and **Google**. Keep **Confirm email** ON. Add redirect URLs `http://localhost:3000/auth/callback` and `https://dwellsense.vercel.app/auth/callback`; Site URL = `https://dwellsense.vercel.app`. **Custom SMTP required for production** (Supabase built-in mail often never reaches users): Resend → verify sending domain → Authentication → Email → SMTP (`smtp.resend.com`, port `465`, user `resend`, password = Resend API key, sender e.g. `noreply@YOUR_DOMAIN`). Raise auth email rate limits after SMTP is live. Do **not** put `SUPABASE_SERVICE_KEY` in the frontend. Do **not** protect `/api/scan` or `/api/pdf` — scans stay public.
+- **Supabase Auth:** See **Supabase Auth & production email** for full checklist (env vars, SMTP, domain verification, rate limits). Quick refs: `NEXT_PUBLIC_SUPABASE_URL` + `NEXT_PUBLIC_SUPABASE_ANON_KEY` on Vercel; redirect URLs `http://localhost:3000/auth/callback` and `https://dwellsense.vercel.app/auth/callback`; Site URL = `https://dwellsense.vercel.app`. Do **not** put `SUPABASE_SERVICE_KEY` in the frontend.
 - **OAuth signed-in but still “logged out” on Vercel:** session cookies must be set on the `/auth/callback` redirect response (see `auth/callback/route.ts`). Redeploy after that fix.
 - **Redeploy vs new code:** Clicking **Redeploy** only rebuilds whatever source Vercel is currently connected to; it does **not** upload local changes from your laptop. If your Vercel project is using **CLI deploys** (`npx vercel --prod`), you must run the CLI again to ship changes. If you want push-to-deploy, connect the Git repo and ensure **Root Directory = `frontend`**.
 
