@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "graphify": {
+      "command": "/Users/hqschool/Desktop/ZerMap/.venv-graphify/bin/python",
+      "args": [
+        "-m",
+        "graphify.serve",
+        "/Users/hqschool/Desktop/ZerMap/graphify-out/graph.json"
+      ]
+    }
+  }
+}

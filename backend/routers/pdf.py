@@ -42,5 +42,5 @@ async def generate_pdf(request: PdfDossierRequest):
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
-        headers={"Content-Disposition": "attachment; filename=DwellSense-Full-Data-Report.pdf"},
+        headers={"Content-Disposition": "attachment; filename=ZerMap-Full-Data-Report.pdf"},
     )

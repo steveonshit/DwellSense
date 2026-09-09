@@ -36,7 +36,7 @@ export async function POST(req: NextRequest) {
       status: 200,
       headers: {
         "Content-Type": "application/pdf",
-        "Content-Disposition": "attachment; filename=DwellSense-Full-Data-Report.pdf",
+        "Content-Disposition": "attachment; filename=ZerMap-Full-Data-Report.pdf",
       },
     });
   } catch {

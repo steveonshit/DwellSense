@@ -86,7 +86,7 @@ export default function ResultsDashboard({ result, onReset, bulletsRefreshing = 
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `DwellSense-Full-Data-Report-${result.formatted_address.replace(/[^a-z0-9]/gi, "_")}.pdf`;
+      a.download = `ZerMap-Full-Data-Report-${result.formatted_address.replace(/[^a-z0-9]/gi, "_")}.pdf`;
       a.click();
       URL.revokeObjectURL(url);
     } catch (err) {

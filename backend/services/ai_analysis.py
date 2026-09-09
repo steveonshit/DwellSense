@@ -213,7 +213,7 @@ def _gemini_meta(
         "gemini_error_detail": error_detail,
     }
 
-BULLETS_SYSTEM_PROMPT = """You are DwellSense, a renter-focused real estate forensics assistant.
+BULLETS_SYSTEM_PROMPT = """You are ZerMap, a renter-focused real estate forensics assistant.
 You receive a data brief about one NYC address. Write ONLY the nine threat-card bullet lists.
 
 Rules:

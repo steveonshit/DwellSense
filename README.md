@@ -1,4 +1,4 @@
-# DwellSense — Real Estate Forensics Platform
+# ZerMap — Real Estate Forensics Platform
 
 > Don't sign a blind lease. Landlords sell the layout. We expose the reality.
 
@@ -7,7 +7,7 @@
 ## Project Structure
 
 ```
-DwellSense/
+ZerMap/
 ├── frontend/        Next.js 15 + Tailwind CSS + Mapbox GL JS
 └── backend/         Python FastAPI + Gemini AI + Supabase
 ```

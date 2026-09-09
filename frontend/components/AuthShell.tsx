@@ -17,7 +17,7 @@ export function AuthShell({ subtitle, children, footer }: AuthShellProps) {
             href="/"
             className="text-2xl font-semibold text-white tracking-tight inline-block"
           >
-            Dwell<span className="text-rose-500">Sense</span>
+            Zer<span className="text-rose-500">Map</span>
           </Link>
           <p className="mt-2 text-sm text-slate-400">{subtitle}</p>
         </div>

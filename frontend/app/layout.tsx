@@ -11,7 +11,7 @@ const manrope = Manrope({
 });
 
 export const metadata: Metadata = {
-  title: "DwellSense | Real Estate Forensics",
+  title: "ZerMap | Real Estate Forensics",
   description: "Don't sign a blind lease. AI-powered threat analysis for any NYC address.",
 };
 

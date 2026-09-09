@@ -31,7 +31,7 @@ def _opensky_auth() -> tuple[str, str] | None:
 def _bbox_for_nyc() -> tuple[float, float, float, float]:
     """
     NYC-ish bounding box for continuous sampling.
-    Tuned for the DwellSense use-case (NYC only).
+    Tuned for the ZerMap use-case (NYC only).
     """
     lat_min, lat_max = 40.35, 41.10
     lng_min, lng_max = -74.55, -73.50
@@ -126,7 +126,7 @@ async def _fetch_adsb_lol_rows(
 
     resp = await client.get(
         f"https://api.adsb.lol/v2/point/{center_lat:.5f}/{center_lng:.5f}/{radius_nm:.1f}",
-        headers={"User-Agent": "DwellSense/1.0 (real ADS-B fallback)"},
+        headers={"User-Agent": "ZerMap/1.0 (real ADS-B fallback)"},
     )
     resp.raise_for_status()
     data = resp.json()

@@ -16,3 +16,10 @@ frontend/tsconfig.tsbuildinfo
 *.log
 .vercel
 .env*.local
+
+# Graphify (local tool; not a product dependency)
+.venv-graphify/
+graphify-out/
+
+# Clerk keyless temp (local only)
+frontend/.clerk/

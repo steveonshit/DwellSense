@@ -1,12 +1,56 @@
-# DwellSense — Project Overview
+# ZerMap — Project Overview
 
-This document describes the **DwellSense** codebase, architecture, deployment, and work completed during setup (GitHub, Railway, Vercel, debugging). It is the **canonical overview** for contributors and for tools like **Claude Code** (read this file first).
+This document describes the **ZerMap** codebase, architecture, deployment, and work completed during setup (GitHub, Railway, Vercel, debugging). It is the **canonical overview** for contributors and for AI tools (**Cursor**, Claude Code, etc.).
 
 ---
 
-## What DwellSense Is
+## For AI agents — read this file first (mandatory)
 
-**DwellSense** is a NYC-focused “real estate forensics” web app. A user enters an address; the system:
+When the user says to **read `project.md`**, **`@project.md`**, or starts a new chat by pointing at this file, the model **MUST**:
+
+1. **Read this file in detail** — not a skim. Cover architecture, request flow, env vars, scoring, flights, dining, PDF, auth, deploy, Working Style, and changelog as needed for the task.
+2. **Hunt for rules** — treat every **non-negotiable**, **must**, **never**, **guardrail**, and **Working Style** item as binding. Priority sources inside this file:
+   - **Data integrity (non-negotiable)** — ALWAYS USE REAL DATA. NEVER FAKE OR MAKE UP ANY DATA.
+   - **NYC-only Scope**
+   - **Working Style (Production Standard)**
+   - Product rules for scan / map / score / Gemini-bullets-only / flights / dining / PDF deep links
+3. **Follow all of those rules** for the rest of the chat (and any subagents). Do not “optimize” by inventing data, silent demo fallbacks, or homepage-style PDF links.
+4. Cross-check always-on Cursor rules when present: `.cursor/rules/data-integrity.mdc`, `.cursor/rules/reliability-first.mdc`, `.cursor/rules/graphify.mdc`. Integrity mirror doc: `docs/DATA_INTEGRITY.md`.
+5. Prefer Graphify (`.venv-graphify/bin/graphify query|path|explain`) for non-trivial codebase / architecture orientation — **not** before every message, server start, or simple Q&A. If the Cursor agent sandbox blocks the Graphify venv, **fall back immediately** to Read / Grep / Glob (do not stall waiting for permissions). After meaningful code/doc edits, run `graphify update .` when practical — do not block the user reply on it.
+
+**`project.md` vs Graphify:** this file is the **product/docs source of truth**. Graphify is the **code/docs map**. “Update graphify” ≠ “update project.md.”
+
+---
+
+## When the user says “update project.md” / `@project.md`
+
+Treat that as: **sync this overview to what is true now**. Do **not** only bump a date. Take notes from **all** of the following that apply, then edit `project.md` so a new chat can rely on it:
+
+| Take notes from | What to capture |
+|-----------------|-----------------|
+| **This chat / session** | Decisions, shipped behavior, rejected approaches, local-vs-prod status, follow-ups |
+| **Code that changed** | New endpoints, env vars, schemas, UI flows, scoring/flight/dining/PDF/auth behavior — match **Notable Code Locations** and relevant sections |
+| **`git` / commits** (if available) | High-signal changelog bullets; commit hashes when useful |
+| **Production vs local** | What is live on Vercel/Railway vs uncommitted local-only experiments |
+| **Rules / integrity** | Any new “never / must / unavailable” rules → **Data integrity**, Working Style, and/or `docs/DATA_INTEGRITY.md` + Cursor `.mdc` rules |
+| **Ops / deploy** | New env vars, Railway/Vercel/Supabase steps, broken assumptions |
+| **Roadmap** | Move items between Implemented / Not yet implemented when status changes |
+| **Graphify / Cursor tooling** | Setup changes, node counts only if meaningfully updated; keep “dev only, not deployed” clear |
+
+**Edit checklist (do these):**
+
+1. Update the **correct section(s)** (do not dump everything into changelog only).
+2. Add a **Recent changelog** bullet when the change is high-signal.
+3. Fix **Last updated** at the bottom.
+4. Keep **ALWAYS USE REAL DATA** language intact unless the user explicitly changes that law.
+5. After updating this file (and any integrity docs), run **`.venv-graphify/bin/graphify update .`** so the map indexes the new text.
+6. Do **not** commit unless the user asks.
+
+---
+
+## What ZerMap Is
+
+**ZerMap** is a NYC-focused “real estate forensics” web app. A user enters an address; the system:
 
 - Geocodes the address (Mapbox)
 - Pulls nearby **crime**, **311**, **permits**, and **evictions** from **Supabase** (pre-loaded via a daily job)
@@ -19,11 +63,34 @@ This document describes the **DwellSense** codebase, architecture, deployment, a
 
 Tagline: *Don’t sign a blind lease.*
 
+### Brand, domain, and local path (August 2026)
+
+**Local product name (uncommitted):** **ZerMap** — written ZerMap; navbar/footer/auth logo is `Zer` + rose `Map` (`Navbar.tsx`, `Footer.tsx`, `AuthShell.tsx`). Package `zermap-frontend`. PDF letterhead `ZERMAP`. Local health JSON is `{"status":"ok","service":"ZerMap API"}`. These strings are **not on production** until commit + push + Vercel/Railway deploy.
+
+**Domain owned:** `zermap.com` (Namecheap, August 2026). Intended public site and auth From-address (`noreply@zermap.com`). **Not pointed yet** — no Vercel custom domain, no Resend DNS, no Supabase custom SMTP. Keep **Confirm email** ON.
+
+**This machine:** repo is `/Users/hqschool/Desktop/ZerMap`. If Cursor Explorer shows the old folder name with `!` and no files, use **File → Open Folder → Desktop → ZerMap**.
+
+**Git origin (still the live GitHub repo):** `https://github.com/steveonshit/DwellSense.git`. Do not assume `steveonshit/ZerMap` exists.
+
+**What real users hit today vs after cutover:**
+
+| Role | Live today (verified) | Target after DNS + env cutover |
+|------|----------------------|--------------------------------|
+| Frontend | `https://dwellsense.vercel.app` (HTTP 200, 19 Aug 2026) | `https://zermap.com` |
+| Backend | `https://dwellsense-production.up.railway.app` | same Railway service (slug rename optional) |
+| CORS `FRONTEND_URL` | live Vercel origin | `https://zermap.com` |
+| Auth Site URL + `/auth/callback` | live Vercel origin | `https://zermap.com` |
+
+**Cutover rule:** do not curl `zermap.com`, and do not change production CORS / Supabase Site URL to `zermap.com`, until Namecheap DNS, Vercel domain, Railway `FRONTEND_URL`, and Supabase redirects move together. Until then, production checks use the **live Vercel alias**.
+
 ---
 
 ## Data integrity (non-negotiable)
 
 **ALWAYS USE REAL DATA. NEVER FAKE OR MAKE UP ANY DATA.**
+
+Dedicated agent/doc node (Graphify + Cursor): **`docs/DATA_INTEGRITY.md`**. Cursor always-on rule: **`.cursor/rules/data-integrity.mdc`**.
 
 Every user-visible number, pin, score input, listing, and map marker must trace to a **real source** (NYC Open Data / Supabase municipal tables, Google Places, Yelp, Mapbox geocoding, ADS-B ingest, etc.).
 
@@ -42,7 +109,7 @@ Every user-visible number, pin, score input, listing, and map marker must trace 
 ## Repository Layout
 
 ```
-DwellSense/
+ZerMap/
 ├── backend/              # Python FastAPI API (includes services/threat_card_layout.py)
 │   ├── services/dossier_context.py  # In-memory raw-scan store + dossier_token (PDF)
 │   ├── services/pdf_dossier.py      # Institutional full-data PDF renderer
@@ -53,10 +120,18 @@ DwellSense/
 │   ├── lib/flightPathDisplay.ts   # Display-only flight line shaping (great-circle arcs + smoothing)
 │   ├── lib/flightExposureDisplay.ts  # Renter-facing flight noise copy + NYC comparison badge
 │   └── lib/threatCardSeverity.ts  # Threat-card badge + wash styles (quiet / watch / elevated)
-├── Dwellsense Final.html # Standalone HTML demo (Leaflet) — not the production app
+├── docs/                 # Contributor research / ops notes (not deployed)
+│   ├── DATA_INTEGRITY.md  # Non-negotiable real-data law (Graphify + Cursor)
+│   └── cursor-token-tools-research.md  # Cursor token-saving tool comparison
+├── graphify-out/         # Local Graphify map (dev only; not deployed) — GRAPH_REPORT.md, graph.json, graph.html
+├── .cursorignore         # Keeps junk out of Cursor context
+├── .venv-graphify/       # Local Graphify CLI venv (gitignored; not a product dependency)
+├── ZerMap Final.html # Standalone HTML demo (Leaflet) — not the production app
 ├── README.md             # Setup: Supabase SQL, env vars, local run
 └── project.md            # This file — architecture, deploy, history, roadmap
 ```
+
+**Note:** `docs/`, `graphify-out/`, and `.venv-graphify/` are **not** part of the Vercel (`frontend/`) or Railway (`backend/`) deploy roots. They do not affect production builds.
 
 ---
 
@@ -75,7 +150,7 @@ DwellSense/
 ### Tech stack in plain English
 
 - **Next.js + React** is the website layer. It renders the landing page, address form, loading ad, score banner, logistics carousel (transit, grocery, **and top dining** in one bar), threat cards, map, pins, and flight visuals.
-- **Supabase Auth** owns identity (email + Google via `/sign-in` and `/sign-up`). The app only depends on a thin `AuthUser` (`id`, `email`) from `AuthProvider` / `useAuth` — easier to swap auth providers later. Navbar shows Sign in / Sign up or email + Sign out. Anonymous scans still work; account-bound **Saved Reports** is the next phase. **Login emails** (confirm signup, password reset) are sent by **Supabase Auth** through a **custom SMTP** provider configured in the Supabase dashboard — DwellSense frontend/backend code does **not** call Resend (or any mail API) directly.
+- **Supabase Auth** owns identity (email + Google via `/sign-in` and `/sign-up`). The app only depends on a thin `AuthUser` (`id`, `email`) from `AuthProvider` / `useAuth` — easier to swap auth providers later. Navbar shows Sign in / Sign up or email + Sign out. Anonymous scans still work; account-bound **Saved Reports** is the next phase. **Login emails** (confirm signup, password reset) are sent by **Supabase Auth** through a **custom SMTP** provider configured in the Supabase dashboard — ZerMap frontend/backend code does **not** call Resend (or any mail API) directly.
 - **Vercel** hosts the frontend and runs the small **Next.js API route** at `frontend/app/api/scan/route.ts`. That route is intentionally a server-side proxy so the browser does not need to know backend secrets or private URLs.
 - **Python + FastAPI** is the backend analysis engine. The main scan endpoint is `POST /scan` in `backend/routers/scan.py`.
 - **Railway** hosts the FastAPI backend. Railway owns the runtime for backend environment variables such as `MAPBOX_TOKEN`, `GOOGLE_MAPS_API_KEY`, `GEMINI_API_KEY`, `SUPABASE_URL`, and `SUPABASE_SERVICE_KEY`.
@@ -93,7 +168,7 @@ DwellSense/
 
 Use this when explaining the system in a 3–5 minute presentation:
 
-> DwellSense is a full-stack web app. The user-facing site is built with Next.js, React, Tailwind, and Mapbox GL, and it is hosted on Vercel. When someone enters an address, the browser calls a Next.js API route, which securely forwards the request to our Python FastAPI backend running on Railway. The backend does the real analysis: it geocodes the address with Mapbox, pulls nearby NYC data from Supabase, calls Google Places for nearby transit and grocery access, ranks the top restaurants and bars within 2 miles (Yelp when configured, else Google Places), computes the Wellness Score in Python, and returns map + score + template bullets quickly. Gemini then refines threat-card bullet text in a follow-up call while the user already reads results. The frontend turns both responses into the score, cards, carousels, map pins, and flight-path visuals.
+> ZerMap is a full-stack web app. The user-facing site is built with Next.js, React, Tailwind, and Mapbox GL, and it is hosted on Vercel. When someone enters an address, the browser calls a Next.js API route, which securely forwards the request to our Python FastAPI backend running on Railway. The backend does the real analysis: it geocodes the address with Mapbox, pulls nearby NYC data from Supabase, calls Google Places for nearby transit and grocery access, ranks the top restaurants and bars within 2 miles (Yelp when configured, else Google Places), computes the Wellness Score in Python, and returns map + score + template bullets quickly. Gemini then refines threat-card bullet text in a follow-up call while the user already reads results. The frontend turns both responses into the score, cards, carousels, map pins, and flight-path visuals.
 
 ### Short memorization version
 
@@ -113,7 +188,7 @@ Use this when explaining the system in a 3–5 minute presentation:
 
 ### High-level flow
 
-1. User submits an address on **Vercel** (e.g. `dwellsense.vercel.app`).
+1. User submits an address on **Vercel** (live: `dwellsense.vercel.app`; target after cutover: `zermap.com`).
 2. Browser calls **`POST /api/scan`** on the Next.js app with **`{ address, defer_gemini: true }`** (keeps `BACKEND_URL` server-side).
 3. Next.js proxies to **`POST {BACKEND_URL}/scan`** on Railway with a **~290s** upstream timeout; the route declares **`maxDuration = 300`** seconds.
 4. Backend runs geocoding, parallel DB + Places calls, flight math, deterministic scoring, and **returns immediately** with template bullets when `defer_gemini=true` (Gemini deferred).
@@ -286,7 +361,7 @@ Use this when explaining the system in a 3–5 minute presentation:
 
 **Client:** `frontend/components/HomeClient.tsx` uses `AbortSignal.timeout(295_000)` on the fetch to `/api/scan` so the UI does not hang forever.
 
-**Health check:** `GET /health` on the backend returns `{"status":"ok","service":"DwellSense API"}`.
+**Health check:** `GET /health` on the backend returns `{"status":"ok","service":"ZerMap API"}` in **local uncommitted** code. Production still serves the previous service string until this rebrand is deployed.
 
 **API errors:** `backend/main.py` registers handlers so many unhandled failures return **JSON** (e.g. `{"detail": ...}`) instead of plain-text stack traces — easier for the Next.js proxy and browser clients to parse.
 
@@ -294,7 +369,7 @@ Use this when explaining the system in a 3–5 minute presentation:
 
 ## NYC-only Scope (Product Guardrails)
 
-DwellSense is intentionally **NYC-only** right now.
+ZerMap is intentionally **NYC-only** right now.
 
 - **Backend enforcement:** `POST /scan` rejects any address that geocodes outside NYC bounds with `400` and message **“Out of reach — NYC addresses only.”**
 - **Frontend enforcement:** The Mapbox map is locked to NYC with `maxBounds` + min/max zoom so users **cannot pan/zoom outside the city**.
@@ -356,7 +431,7 @@ Supabase queries are done as a fast **bounding-box prefilter** (lat/lng rectangl
 
 ### 311 noise filtering (NYC reality)
 
-NYC 311 is extremely noisy. DwellSense excludes **parking / vehicle / traffic enforcement** style 311 complaints from:
+NYC 311 is extremely noisy. ZerMap excludes **parking / vehicle / traffic enforcement** style 311 complaints from:
 
 - scoring
 - map pins / zones
@@ -384,7 +459,7 @@ This is a labeling improvement only. It does not invent hazards: labels are deri
 
 ## Dining / Restaurants & Bars (Current Behavior)
 
-DwellSense shows the **top 4 ranked restaurants and bars within 2 miles** of the scanned address. Rankings come from real third-party APIs — **no invented scores or fake listings**.
+ZerMap shows the **top 4 ranked restaurants and bars within 2 miles** of the scanned address. Rankings come from real third-party APIs — **no invented scores or fake listings**.
 
 ### Why Yelp + Google Places
 
@@ -496,7 +571,7 @@ Expected: `4` and a real venue name (not an error).
 | `GEMINI_TIMEOUT_SECONDS` | Optional. Seconds for `asyncio.wait_for` around Gemini (default **300**). Set **`0`** to disable the asyncio timeout guard (still subject to upstream/Vercel/Railway limits). See `backend/.env.example`. |
 | `SUPABASE_URL` | Database URL |
 | `SUPABASE_SERVICE_KEY` | Service role key (not anon) |
-| `FRONTEND_URL` | CORS — set to **`https://dwellsense.vercel.app`** in production (not `localhost`) |
+| `FRONTEND_URL` | CORS — production must match the **live frontend origin** (`https://dwellsense.vercel.app` today; `https://zermap.com` only after DNS cutover). Not `localhost`. |
 | `SCAN_RADIUS_MILES` | Optional. **0.25–10**, default **2**. True Haversine radius for municipal fetches, map caption, flight-path clip, and exposure default. |
 | `MAP_SWARM_MAX_PINS` | Optional. **20–200**, default **100**. Max map pins rendered; **`swarm_location_total`** still reports full unique geocodes in radius. |
 | `PORT` | Railway sets this automatically |
@@ -543,7 +618,7 @@ Expected: `4` and a real venue name (not an error).
 | Variable | Purpose |
 |----------|---------|
 | `NEXT_PUBLIC_MAPBOX_TOKEN` | Mapbox map (public by design) |
-| `BACKEND_URL` | Railway backend URL (e.g. `https://dwellsense-production.up.railway.app`) |
+| `BACKEND_URL` | Railway backend URL (live: `https://dwellsense-production.up.railway.app`) |
 | `NEXT_PUBLIC_SUPABASE_URL` | Supabase project URL (browser + SSR auth). Same project as backend municipal data. |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase **anon** key only (never the service_role key). |
 | `NEXT_PUBLIC_FLIGHT_PATH_GREAT_CIRCLE` | Optional. Default **`1`**. Display-only: densifies line segments along great-circle arcs so long 2-point routes do not render as screen-straight chords. |
@@ -563,7 +638,8 @@ Before implementing or verifying a feature, confirm **where** it should land:
 | Target | Frontend | Backend | When to use |
 |--------|----------|---------|-------------|
 | **Local** | `http://localhost:3000` | `http://127.0.0.1:8000` | Dev, debugging, unreleased code |
-| **Live site** | `https://dwellsense.vercel.app` | `https://dwellsense-production.up.railway.app` | What real users see |
+| **Live site** | `https://dwellsense.vercel.app` | `https://dwellsense-production.up.railway.app` | What real users see today |
+| **Target site** | `https://zermap.com` | same Railway backend | After Namecheap DNS + Vercel domain + CORS cutover |
 
 **Rules of thumb:**
 
@@ -578,7 +654,7 @@ Before implementing or verifying a feature, confirm **where** it should land:
 
 Auth **identity** lives in Supabase + the thin frontend layer (`AuthProvider` / `useAuth`). Auth **email delivery** (signup confirmation, password reset) is a **Supabase dashboard** concern: enable **custom SMTP** and point it at a transactional email provider.
 
-### What DwellSense code does vs what Supabase does
+### What ZerMap code does vs what Supabase does
 
 | Layer | Responsibility |
 |-------|----------------|
@@ -594,7 +670,7 @@ Supabase’s default mailer is for development and light testing. For a real pub
 
 ### Default provider: Resend (decision)
 
-**Resend** is the recommended **starting** provider for DwellSense auth email:
+**Resend** is the recommended **starting** provider for ZerMap auth email:
 
 | Reason | Detail |
 |--------|--------|
@@ -623,20 +699,22 @@ No frontend redeploy required for an SMTP swap. **Future product email** (market
 
 ### Domain verification (required)
 
-You cannot send production auth mail from `@dwellsense.vercel.app`. You need a **domain you own** (e.g. `dwellsense.com`):
+You cannot send production auth mail from a `*.vercel.app` address. **`zermap.com` is purchased** (Namecheap). Next ops steps (not done):
 
-1. Add the domain in Resend (or chosen provider).
-2. Add the DNS records they give you (SPF, DKIM) at your registrar/DNS host (Cloudflare, Namecheap, etc.).
+1. Add `zermap.com` in Resend (or chosen provider).
+2. Add the DNS records they give you in **Namecheap Advanced DNS** (host `send` / `resend._domainkey` — Namecheap auto-appends the domain).
 3. Wait until the provider marks the domain **verified**.
-4. Use a sender like `noreply@yourdomain.com` in Supabase SMTP.
+4. Use sender `noreply@zermap.com` in Supabase SMTP.
+
+Until that SMTP is live, signup/reset mail still uses whatever Supabase is configured for today (built-in mailer if custom SMTP is off).
 
 ### Production auth checklist
 
 1. **Vercel:** `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` (Production + Preview).
 2. **Supabase → Providers:** Email + Google enabled; **Confirm email** ON.
-3. **Supabase → URL Configuration:** Site URL `https://dwellsense.vercel.app`; redirect URLs `https://dwellsense.vercel.app/auth/callback` and `http://localhost:3000/auth/callback`.
+3. **Supabase → URL Configuration:** until domain cutover, Site URL = `https://dwellsense.vercel.app`; redirect URLs = that origin `/auth/callback` **and** `http://localhost:3000/auth/callback`. After cutover, switch Site URL + production redirect to `https://zermap.com` / `https://zermap.com/auth/callback`.
 4. **Resend:** verify domain → copy SMTP credentials.
-5. **Supabase → Authentication → Email → SMTP:** host `smtp.resend.com`, port `465`, user `resend`, password = Resend API key, sender = `noreply@YOUR_DOMAIN`.
+5. **Supabase → Authentication → Email → SMTP:** host `smtp.resend.com`, port `465`, user `resend`, password = Resend API key, sender = `noreply@zermap.com`.
 6. **Supabase → Rate limits:** raise auth email limits after SMTP is live (default ~30/hour is too low for growth).
 7. **Google OAuth:** redirect URI `https://<project-ref>.supabase.co/auth/v1/callback` in Google Cloud Console.
 8. **Never** put `SUPABASE_SERVICE_KEY` in the frontend. **Do not** protect `/api/scan` or `/api/pdf` — scans stay public.
@@ -659,7 +737,7 @@ See also **Issues Encountered → Vercel → Supabase Auth** for OAuth cookie an
 
 ### GitHub
 
-- Remote: `https://github.com/steveonshit/DwellSense.git`
+- Remote: `https://github.com/steveonshit/DwellSense.git` (GitHub slug not renamed yet).
 - `.gitignore` excludes `backend/.env`, `backend/venv/`, `frontend/.env.local`, `frontend/node_modules/`, etc.
 - **Supabase migrations:** workflow **`.github/workflows/supabase-migrations.yml`** runs on pushes to `main` when `supabase/migrations/**` changes. Configure Action secrets **`SUPABASE_ACCESS_TOKEN`**, **`SUPABASE_PROJECT_REF`**, **`SUPABASE_DB_PASSWORD`** (see `README.md`). No database credentials belong in chat or committed files.
 
@@ -736,6 +814,9 @@ This table stores raw ADS‑B position samples — individual aircraft observati
 | Forgot / update password | `frontend/app/forgot-password/page.tsx`, `update-password/page.tsx` |
 | Email validation (auth forms) | `frontend/lib/auth/email.ts` |
 | Auth UI shell | `frontend/components/AuthShell.tsx` |
+| Cursor token-tools research (dev only) | `docs/cursor-token-tools-research.md` |
+| Graphify Cursor rule + MCP | `.cursor/rules/graphify.mdc`, `.cursor/mcp.json` |
+| Graphify outputs (local map) | `graphify-out/GRAPH_REPORT.md`, `graphify-out/graph.json` |
 | Navbar auth chrome | `frontend/components/Navbar.tsx` (Sign in / Sign up / Sign out) |
 | Scan + loading ad + deferred bullets (client) | `frontend/components/HomeClient.tsx` |
 | Site footer (server, dynamic copyright year) | `frontend/components/Footer.tsx` |
@@ -875,22 +956,72 @@ When **`reports_count ≥ 200`** and **`crime_count < 8`**, the v2 311 adjustmen
 - **Wellness banner drivers:** `banner_driver` ranks area safety, noise, 311, permits, evictions by relative elevation within ~2 mi (`threat_card_layout.py` + `bannerDriver.ts`).
 - **Threat card severity styling (`cdde6f5`, production):** three-tier emerald/amber/rose colors + **`severity_level`** badges; `threatCardSeverity.ts` + `ThreatCarousel.tsx`.
 - **Typography (local, uncommitted):** **Manrope** via `next/font`; tighter hero/nav weights and sentence case — font-only experiment; Option 1 color cool-down was tried and reverted.
+- **ZerMap local rebrand (uncommitted, Aug 2026):** UI, PDF, health string, docs, package name; folder `/Users/hqschool/Desktop/ZerMap`. Production still serves the previous name at the live Vercel alias until commit + deploy + DNS cutover.
 - **Server-rendered footer:** `Footer.tsx` for dynamic copyright year.
 - **ESLint:** `frontend/.eslintrc.json` extends `next/core-web-vitals`.
 - **Flight exposure NYC night window:** `America/New_York` 10 PM–7 AM in `flight_exposure.py`.
+- **Graphify (dev tooling, local):** Cursor rule + MCP + AST graph (`graphify-out/`); `.cursorignore`; data-integrity always-on rule + `docs/DATA_INTEGRITY.md`. Rule loosened July 2026 so Graphify does not stall agent turns. See **Working Style → Graphify setup**. Not a production dependency.
 
 ---
 
 ## Working Style (Production Standard)
 
+- **Read `project.md` in detail when asked** — see **For AI agents — read this file first** at the top. Extract every rule and follow them.
+- **“Update project.md”** — see **When the user says “update project.md”** at the top; take notes from chat + code + git + local/prod + rules, then sync sections + changelog + last updated, then `graphify update .`.
 - **Reliability first**: treat this as a production system; avoid shortcuts and misleading data.
 - **ALWAYS USE REAL DATA. NEVER FAKE OR MAKE UP ANY DATA.** (See **Data integrity** above.)
 - **No fake outputs**: if a data source is unavailable, surface **unavailable** (with graceful degradation) rather than inventing approximations without clear labeling. **Exception:** map **display-only** flight line shaping is allowed when labeled as visual smoothing — API coordinates remain the backend truth unless you change server code.
 - **Local vs live site**: confirm whether work targets **localhost** or **production** before implementing or verifying; push to `main` and wait for Railway/Vercel deploy before expecting changes on the public URL.
 - **When giving operational instructions** (dashboards, env vars, deploy steps): provide them **clearly**, **grouped together**, and in **bullet-point format** with exact variable names/values.
 
+### Cursor / AI coding cost (developer tooling)
+
+Token spend is a **developer workflow** concern, not a product feature. Full comparison: **`docs/cursor-token-tools-research.md`**. Graphify is **installed locally** (July 2026).
+
+**Hygiene first (free) — still do this even with Graphify:**
+- Prefer scoped `@file` / `@folder` over whole-repo context.
+- Start a **new chat** when the topic changes (long threads re-send history every turn — a graph does **not** replace this).
+- Root **`.cursorignore`** already excludes `node_modules`, `.next`, venvs, lockfiles, `.clerk/`, `graphify-out/cache/`.
+- Keep this `project.md` as the product map; do not paste the entire file into every prompt.
+
+**Tool ranking for ZerMap:**
+1. **Graphify** — **installed** (primary code/docs map).
+2. **Vexp** — optional runner-up (auto context capsules while coding).
+3. **code-review-graph** — optional later (blast radius / PR review).
+4. **TrueCourse** — **not** for saving tokens (architecture / doc–code drift; uses LLM tokens).
+
+### Graphify setup (this machine)
+
+| Piece | Path / detail |
+|-------|----------------|
+| Package | PyPI name **`graphifyy`** (two y’s — package-name availability); import / CLI still **`graphify`**. Upstream: [github.com/safishamsi/graphify](https://github.com/safishamsi/graphify) (MIT). Installed version checked July 2026: **0.9.17**. |
+| CLI venv | `.venv-graphify/` (Python 3.12; gitignored) — this is the **install folder** for the Graphify program + libs, **not** the knowledge-graph database. The map/data is `graphify-out/graph.json`. |
+| Cursor rule | `.cursor/rules/graphify.mdc` (`alwaysApply: true`) — **prefer** Graphify for non-trivial code-map questions; **never stall** if the agent sandbox blocks the venv (fall back to Read / Grep / Glob immediately). Not mandatory before every Read/Bash. |
+| MCP | `.cursor/mcp.json` → `/Users/hqschool/Desktop/ZerMap/.venv-graphify/bin/python -m graphify.serve …/graphify-out/graph.json` |
+| First build / current map | AST extract; refresh with `graphify update .` — 19 Aug 2026 refresh ~**850 nodes · 1551 edges · 51 communities** |
+| Outputs | `graphify-out/graph.json`, `GRAPH_REPORT.md`, `graph.html` |
+| Ignore junk | `.cursorignore` (see above) |
+
+**Agent sandbox note (why Cursor felt “stuck” after Graphify):** Cursor’s agent safety cage restricts shell commands the model runs. Built-in `Read` / `Grep` on project files usually stay inside the workspace. Running `.venv-graphify/bin/graphify` activates a Python venv that points at system Python outside the project, so the sandbox often blocks it (`PermissionError` on `pyvenv.cfg`) unless elevated permissions are granted. An earlier **mandatory** “always run Graphify first” rule made the agent wait on that path. **Fix (July 2026):** loosen `graphify.mdc` — prefer Graphify when useful; answer simple ops immediately; fall back without waiting.
+
+**Commands:**
+1. Rebuild after code changes (no API cost): `.venv-graphify/bin/graphify update .`
+2. Query map: `.venv-graphify/bin/graphify query "…"`, `path "A" "B"`, `explain "…"`.
+3. Optional SQL nodes: `.venv-graphify/bin/pip install "graphifyy[sql]"` then re-run `update`.
+
+**After install — restart Cursor once** so MCP loads:
+1. Quit Cursor (`Cmd+Q`) and reopen, **or**
+2. `Cmd+Shift+P` → **Reload Window**.
+
+Then start a **new chat** for new work. Product deploys do **not** depend on Graphify.
+
+Do **not** install TrueCourse expecting lower Cursor spend. Vexp remains optional.
+
 **Not yet implemented** (discussed direction):
 
+- **Domain + auth-email cutover:** point `zermap.com` at Vercel; Railway `FRONTEND_URL`; Supabase Site URL + redirects; Resend DNS + SMTP (`noreply@zermap.com`). Keep Confirm email ON.
+- **Dashboard slug rename:** GitHub repo, Vercel project name, Railway service name — optional; not required for DNS cutover if custom domain is attached.
+- **Commit/deploy ZerMap chrome:** local rename + Manrope + loading-ad copy still uncommitted.
 - **Saved Reports (Phase 2):** after Supabase Auth identity, persist full scan JSON per `AuthUser.id` and reopen from a Saved Reports page.
 - **HPD violations ingestion:** pull Housing Maintenance Code Violations into scan scoring / threat bullets (today the card is honest that HPD is not ingested; the **PDF** already deep-links address-filtered Open Data `wvxf-dwi5`).
 - **Alternative models:** If latency remains an issue even with deferred bullets, evaluate faster inference hosts (e.g. Groq) or other APIs — quality vs speed tradeoff.
@@ -921,7 +1052,7 @@ Below is a concise log of problems faced while connecting GitHub, Railway, Verce
 - **Deployment blocked / GitHub identity:** Private email or committer mismatch; resolved via **CLI deploy** (`npx vercel --prod`) and/or linking accounts.
 - **Path `frontend/frontend` error:** Vercel project had **Root Directory = `frontend`** while CLI ran from inside `frontend/` — doubled path. Fix: deploy from repo root with correct settings, or **new project** from `frontend/` without conflicting root.
 - **`BACKEND_URL` / `NEXT_PUBLIC_MAPBOX_TOKEN`:** Must be set in **Vercel → Project → Environment Variables** for Production (and Preview as needed).
-- **Supabase Auth:** See **Supabase Auth & production email** for full checklist (env vars, SMTP, domain verification, rate limits). Quick refs: `NEXT_PUBLIC_SUPABASE_URL` + `NEXT_PUBLIC_SUPABASE_ANON_KEY` on Vercel; redirect URLs `http://localhost:3000/auth/callback` and `https://dwellsense.vercel.app/auth/callback`; Site URL = `https://dwellsense.vercel.app`. Do **not** put `SUPABASE_SERVICE_KEY` in the frontend.
+- **Supabase Auth:** See **Supabase Auth & production email** for full checklist (env vars, SMTP, domain verification, rate limits). Quick refs: `NEXT_PUBLIC_SUPABASE_URL` + `NEXT_PUBLIC_SUPABASE_ANON_KEY` on Vercel; redirect URLs `http://localhost:3000/auth/callback` and the **live** frontend origin `/auth/callback` (`https://dwellsense.vercel.app/auth/callback` today; `https://zermap.com/auth/callback` after cutover). Do **not** put `SUPABASE_SERVICE_KEY` in the frontend.
 - **OAuth signed-in but still “logged out” on Vercel:** session cookies must be set on the `/auth/callback` redirect response (see `auth/callback/route.ts`). Redeploy after that fix.
 - **Redeploy vs new code:** Clicking **Redeploy** only rebuilds whatever source Vercel is currently connected to; it does **not** upload local changes from your laptop. If your Vercel project is using **CLI deploys** (`npx vercel --prod`), you must run the CLI again to ship changes. If you want push-to-deploy, connect the Git repo and ensure **Root Directory = `frontend`**.
 
@@ -1098,16 +1229,17 @@ python -m jobs.daily_refresh
 
 ---
 
-## Production URLs (examples — confirm in your dashboards)
+## Production URLs (confirm in dashboards)
 
-- Frontend: `https://dwellsense.vercel.app` (or your Vercel alias)
-- Backend: `https://dwellsense-production.up.railway.app` (or your Railway domain)
+- **Live frontend:** `https://dwellsense.vercel.app`
+- **Live backend:** `https://dwellsense-production.up.railway.app`
+- **Owned, not live:** `https://zermap.com` (Namecheap; DNS not pointed)
 
 ---
 
 ## Standalone HTML Demo
 
-`Dwellsense Final.html` is a **single-file** prototype (Tailwind CDN + Leaflet). It is **not** wired to this backend by default; the production app is the **Next.js + FastAPI** stack above.
+`ZerMap Final.html` is a **single-file** prototype (Tailwind CDN + Leaflet). It is **not** wired to this backend by default; the production app is the **Next.js + FastAPI** stack above.
 
 ---
 
@@ -1133,10 +1265,10 @@ python -m jobs.daily_refresh
 - **Server-rendered footer:** dynamic copyright year (`c85136a`)
 - **PDF dossier (full raw data + deep links):** **Download Full Report** → `dossier_token` → `pdf_dossier.py` + `source_links.py` — NYC Open Data explore filters (record / street / radius), Maps/Yelp listings, OpenSky bbox, HPD violations explore; **no site homepages**
 - **No synthetic flight fallback in `auto`:** empty flight paths when no ADS-B samples (not static corridors)
-- **Production CORS:** `FRONTEND_URL=https://dwellsense.vercel.app` on Railway
+- **Production CORS:** `FRONTEND_URL` on Railway must match the **live** frontend origin (`https://dwellsense.vercel.app` today). Switch to `https://zermap.com` only at DNS cutover.
 - **Public beta chrome:** navbar badge; scan summary / honest side-ad placeholders; server-rendered footer; footer links to NYC Open Data
 
-**Production verification (July 2026, post-`cdde6f5`):** hard-refresh `https://dwellsense.vercel.app`, run a new scan. Expect **`banner_driver`** breakdown chip; flight panel gated on typical blocks; threat cards with **All clear** / **Worth watching** / **Elevated** badges; deferred Gemini flow unchanged. **Manrope font** and loading-ad **“Still scanning address…”** copy are **local only** until committed.
+**Production verification (July 2026, post-`cdde6f5`):** hard-refresh `https://dwellsense.vercel.app`, run a new scan. Expect **`banner_driver`** breakdown chip; flight panel gated on typical blocks; threat cards with **All clear** / **Worth watching** / **Elevated** badges; deferred Gemini flow unchanged. **Manrope font**, loading-ad **“Still scanning address…”**, and **ZerMap** chrome are **local only** until committed and deployed.
 
 **Ongoing / decisions:**
 
@@ -1146,10 +1278,32 @@ python -m jobs.daily_refresh
 - **Flight-path warehouse:** promote `adsb_samples` from operational raw samples into a long-term warehouse: retention policy, source metadata, quality scoring, route/corridor aggregates, stable display tables, and observability
 - **Deferred bullets durability:** `_pending_bullets` is in-memory on a single Railway instance — multi-instance or restart loses tokens (client keeps template bullets; acceptable for now)
 - **Optional:** commercial ADS‑B feed vs OpenSky-only if you need SLA-grade tracks at scale
+- **Brand cutover:** `zermap.com` DNS → Vercel; Railway CORS; Supabase redirects; Resend SMTP; then commit/deploy ZerMap UI
 
 ---
 
 ## Recent changelog (high-signal)
+
+### August 2026 — local rebrand to ZerMap (uncommitted)
+
+- **Decision:** product name **ZerMap**; owned domain **`zermap.com`** (Namecheap). Auth mail will use `noreply@zermap.com` after Resend + Supabase SMTP (not done).
+- **Local source:** UI chrome, metadata, PDF, health check, `zermap-frontend`, docs, Cursor rules, demo `ZerMap Final.html`. Repo folder moved to `/Users/hqschool/Desktop/ZerMap` (open that folder in Cursor if Explorer is empty).
+- **Still live for users:** `https://dwellsense.vercel.app` + `https://dwellsense-production.up.railway.app`. Git remote still `steveonshit/DwellSense.git`.
+- **Do not treat `zermap.com` as the live site** until DNS + Vercel domain + CORS + Supabase redirects cut over together.
+- **Also still local / uncommitted:** Manrope + loading-ad **“Still scanning address…”**.
+
+### July 2026 — Graphify rule: prefer, never stall (agent sandbox)
+
+- **Problem:** After Graphify install, agent turns hung when the Cursor sandbox blocked `.venv-graphify` (venv points at system Python outside the workspace). A prior **mandatory** “run Graphify before every Read/Grep/Bash” rule made the agent wait instead of answering.
+- **Fix:** `.cursor/rules/graphify.mdc` — prefer Graphify for non-trivial architecture orientation; never require it for simple Q&A / `start local` / git; if sandbox blocks, fall back to Read/Grep/Glob immediately.
+- **Package identity:** PyPI **`graphifyy`** 0.9.17; upstream [github.com/safishamsi/graphify](https://github.com/safishamsi/graphify). Venv = install folder; map DB = `graphify-out/graph.json`. Not malware — MIT AST map tool.
+- **Still local / uncommitted product UX:** Manrope typography + loading-ad **“Still scanning address…”** (unchanged status).
+
+### July 2026 — project.md AI protocol + data-integrity stack
+
+- **`project.md`:** top sections **For AI agents — read this file first** (read in detail, hunt rules, follow them) and **When the user says “update project.md”** (what to take notes from + edit checklist). Working Style points at both.
+- **Data integrity stack:** `.cursor/rules/data-integrity.mdc` (alwaysApply), `docs/DATA_INTEGRITY.md` (Graphify node), `graphify.mdc` reminder on scan/map/score/dining/flights/PDF; `reliability-first.mdc` cross-links.
+- **Graphify:** local map refreshed (~844 nodes); “update graphify” ≠ “update project.md.”
 
 ### July 2026 — full PDF dossier + deep source links
 
@@ -1213,4 +1367,4 @@ python -m jobs.daily_refresh
 
 ---
 
-*Last updated: **July 2026** — full PDF dossier + deep source links shipped; threat card severity badges on production (`cdde6f5`); local Manrope typography + loading-ad scan feedback still uncommitted.*
+*Last updated: **August 19, 2026** — **ZerMap** local rebrand uncommitted; live site still `dwellsense.vercel.app`; `zermap.com` purchased (Namecheap) but DNS/Resend/SMTP not done; Graphify rule loosened (prefer / never stall); `graphifyy` + venv vs `graph.json`; AI protocol + data-integrity stack; PDF dossier + threat severity on production (`cdde6f5`); Manrope + loading-ad UX still uncommitted.*

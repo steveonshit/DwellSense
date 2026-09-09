@@ -1,0 +1,28 @@
+---
+description: Non-negotiable real-data-only rule for all ZerMap work
+alwaysApply: true
+---
+
+# Data integrity (non-negotiable)
+
+**ALWAYS USE REAL DATA. NEVER FAKE OR MAKE UP ANY DATA.**
+
+Canonical detail: `docs/DATA_INTEGRITY.md` and `project.md` → Data integrity.
+
+## Must follow on every task
+
+- Every user-visible number, pin, score input, listing, map marker, dining venue, flight path, and PDF link must come from a **real source** (NYC Open Data / Supabase, Google Places, Yelp, Mapbox, ADS-B ingest, etc.).
+- **No invented records** — do not place pins, counts, or incidents that are not in fetched datasets.
+- **No synthetic map fallbacks** — no heuristic flight corridors, random jitter, or demo swarms when live data is missing; show **nothing** or label **unavailable**.
+- **Unavailable means unavailable** — empty / `unavailable` / graceful degrade; never approximate without clear labeling.
+- **Truncation must be honest** — if the UI shows a subset of real locations, say so (e.g. “Showing 100 of N real locations”); scoring still uses full in-radius counts.
+- **PDF / external links** — every dossier URI must open a **real filtered** official/source page — never a site homepage and never a localhost proxy.
+
+## Allowed (display-only, not new facts)
+
+- Great-circle / visual smoothing of **existing** ADS-B vertices for map rendering.
+- Merged label when multiple **real** records share one NYC geocode.
+
+## When unsure
+
+Prefer **unavailable / empty / omit** over inventing. If a feature needs demo-looking output, use an explicit labeled mode only when product docs already define it (e.g. `FLIGHT_MODE=static`) — never as a silent fallback for `auto` / live paths.

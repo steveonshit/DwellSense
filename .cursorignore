@@ -1,0 +1,33 @@
+# Dependencies & build artifacts (keep out of Cursor context)
+node_modules/
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+backend/venv/
+backend/__pycache__/
+**/__pycache__/
+**/*.pyc
+.venv/
+.venv-graphify/
+
+# Lockfiles & package noise
+package-lock.json
+frontend/package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Env / secrets / local tooling
+.env
+.env.*
+!.env*.example
+frontend/.env.local
+backend/.env
+frontend/.clerk/
+
+# Graphify local cache
+graphify-out/cache/
+
+# Misc
+.DS_Store
+*.log
+.git/

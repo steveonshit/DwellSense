@@ -1,5 +1,5 @@
 """
-DwellSense Backend — FastAPI application entry point.
+ZerMap Backend — FastAPI application entry point.
 """
 
 import os
@@ -20,7 +20,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from routers import health, scan, pdf
 from jobs.daily_refresh import run_all as daily_refresh
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("dwellsense")
+logger = logging.getLogger("zermap")
 
 scheduler = AsyncIOScheduler()
 
@@ -77,7 +77,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="DwellSense API",
+    title="ZerMap API",
     description="Real estate forensics backend — AI-powered threat analysis for any NYC address.",
     version="1.0.0",
     lifespan=lifespan,

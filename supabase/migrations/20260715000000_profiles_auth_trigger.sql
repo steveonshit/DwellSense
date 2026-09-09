@@ -1,4 +1,4 @@
--- SAFE FOR DWELLSENSE (reviewed):
+-- SAFE FOR ZERMAP (reviewed):
 -- - Does NOT drop/alter crime_reports, reports_311, building_permits, eviction_records, adsb_samples
 -- - Only creates/updates public.profiles + one auth.users trigger/function named below
 -- - DROP ... IF EXISTS only removes our own policies/trigger if recreating them

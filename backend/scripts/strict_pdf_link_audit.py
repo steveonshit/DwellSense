@@ -42,7 +42,7 @@ def http_json(method: str, url: str, payload: dict | None = None, timeout: int =
     req = urllib.request.Request(
         url,
         data=data,
-        headers={"Content-Type": "application/json", "User-Agent": "DwellSense-StrictAudit/1.0"},
+        headers={"Content-Type": "application/json", "User-Agent": "ZerMap-StrictAudit/1.0"},
         method=method,
     )
     try:
@@ -61,7 +61,7 @@ def http_json(method: str, url: str, payload: dict | None = None, timeout: int =
 
 
 def http_get(url: str, timeout: int = 25) -> tuple[int, bytes]:
-    req = urllib.request.Request(url, headers={"User-Agent": "DwellSense-StrictAudit/1.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": "ZerMap-StrictAudit/1.0"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.status, resp.read()
@@ -210,7 +210,7 @@ def main() -> int:
     else:
         ok(f"pdf via frontend proxy {len(raw):,} bytes (ctype={ctype})")
 
-    out = "/tmp/dwellsense_strict_audit.pdf"
+    out = "/tmp/zermap_strict_audit.pdf"
     with open(out, "wb") as f:
         f.write(raw)
     print(f"  wrote {out}")

@@ -5,4 +5,4 @@ router = APIRouter()
 
 @router.get("/health")
 async def health():
-    return {"status": "ok", "service": "DwellSense API"}
+    return {"status": "ok", "service": "ZerMap API"}

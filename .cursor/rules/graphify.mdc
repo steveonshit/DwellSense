@@ -1,0 +1,33 @@
+---
+description: graphify knowledge graph context
+alwaysApply: true
+---
+
+This project has a graphify knowledge graph at `graphify-out/`.
+
+Use the local CLI (venv): `.venv-graphify/bin/graphify`
+
+**Prefer Graphify for codebase / architecture orientation** (not for every message):
+- `.venv-graphify/bin/graphify query "<question>"` — scoped subgraph
+- `.venv-graphify/bin/graphify path "<A>" "<B>"` — dependency path between two symbols
+- `.venv-graphify/bin/graphify explain "<concept>"` — nodes related to a concept
+
+**Never stall the user on Graphify:**
+- Answer simple / already-known questions immediately — do **not** run Graphify first.
+- Do **not** run Graphify before starting servers, git status, env checks, or other operational commands.
+- If the sandbox blocks the venv or Graphify does not return quickly, **fall back immediately** to Read / Grep / Glob — do not wait, retry-loop, or sit idle for permissions.
+- Request elevated permissions for Graphify only when a graph query is clearly needed and the first attempt failed for sandbox reasons.
+
+**When Graphify helps most:** non-trivial “how does X connect / where is Y wired” exploration across files. For a known file path or a few-line edit, go straight to Read / edit.
+
+- If `graphify-out/wiki/index.md` exists, navigate it instead of reading raw files when doing broad orientation
+- Read `graphify-out/GRAPH_REPORT.md` only for broad architecture review when query/path/explain do not surface enough context
+- After modifying code files, run `.venv-graphify/bin/graphify update .` to keep the graph current (AST-only, no API cost) — do not block the user reply on this; run it after the change when practical
+
+## Data integrity (mandatory when exploring or changing data paths)
+
+When the task touches **scan, map, score, dining, flights, threat cards, or PDF dossier**:
+
+1. Treat **ALWAYS USE REAL DATA. NEVER FAKE OR MAKE UP ANY DATA.** as mandatory context.
+2. Prefer `docs/DATA_INTEGRITY.md` (and `project.md` → Data integrity) before inventing fallbacks, demo pins, synthetic flights, fake dining, or homepage-style PDF links. Graphify on integrity is optional, never a gate.
+3. Missing signals → empty / `unavailable` / omit — never silent approximation.

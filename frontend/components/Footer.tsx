@@ -8,7 +8,7 @@ export default function Footer() {
       <div className="max-w-7xl mx-auto px-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
         <div className="flex-1">
           <div className="font-black text-base text-white tracking-tight flex items-center gap-1 mb-1">
-            Dwell<span className="text-rose-500">Sense</span>
+            Zer<span className="text-rose-500">Map</span>
           </div>
           <p className="text-slate-500 text-[10px] leading-snug max-w-xs">
             Asymmetric data leverage for renters. Uncovering the truth Big Real Estate wants hidden.
@@ -36,7 +36,7 @@ export default function Footer() {
           </div>
         </div>
         <div className="flex flex-col items-start md:items-end gap-2 text-[10px] text-slate-600">
-          <p>&copy; {year} DwellSense. Not affiliated with Zillow.</p>
+          <p>&copy; {year} ZerMap. Not affiliated with Zillow.</p>
         </div>
       </div>
     </footer>

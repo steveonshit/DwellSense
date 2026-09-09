@@ -18,7 +18,7 @@ export default function Navbar() {
         href="/"
         className="absolute left-1/2 transform -translate-x-1/2 font-semibold text-3xl md:text-4xl text-white tracking-tight flex items-center gap-0.5 drop-shadow-md leading-none"
       >
-        Dwell<span className="text-rose-500">Sense</span>
+        Zer<span className="text-rose-500">Map</span>
       </Link>
 
       <div className="flex items-center justify-end gap-2 sm:gap-3 w-full md:w-1/3">
